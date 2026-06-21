@@ -1,0 +1,20 @@
+[
+  {
+    "hash": "98e21a5cee555eb633ccd0ff31f927c0",
+    "error": "    lr_model = LogisticRegression(\n               ^^^^^^^^^^^^^^^^^^^\nTypeError: LogisticRegression.__init__() got an unexpected keyword argument 'multi_class'",
+    "full_traceback": "STDOUT:\n\nSTDERR:\nTraceback (most recent call last):\n  File \"/home/salvatoreucchino/Scrivania/Projects/vibecoding-agents-capstone-project/kaggle-copilot/temp_validation.py\", line 41, in <module>\n    lr_model = LogisticRegression(\n               ^^^^^^^^^^^^^^^^^^^\nTypeError: LogisticRegression.__init__() got an unexpected keyword argument 'multi_class'\n",
+    "context_script": "import pandas as pd\nimport numpy as np\nfrom sklearn.model_selection import StratifiedKFold, cross_validate\nfrom sklearn.linear_model import LogisticRegression\nfrom sklearn.ensemble import RandomForestClassifier\nfrom sklearn.pipeline import Pipeline\nfrom sklearn.compose import ColumnTransformer\nfrom sklearn.impute import SimpleImputer\nfrom sklearn.preprocessing import StandardScaler, OneHotEncoder\n\n# --- 1. Define Feature Sets based on assumed schema (using synthetic data) ---\nnumerical_features ..."
+  },
+  {
+    "hash": "194099032c5ac778963555f84ea1fff3",
+    "error": "    logreg_model = LogisticRegression(\n                   ^^^^^^^^^^^^^^^^^^^\nTypeError: LogisticRegression.__init__() got an unexpected keyword argument 'multi_class'",
+    "full_traceback": "STDOUT:\n\nSTDERR:\nTraceback (most recent call last):\n  File \"/home/salvatoreucchino/Scrivania/Projects/vibecoding-agents-capstone-project/kaggle-copilot/temp_validation.py\", line 33, in <module>\n    logreg_model = LogisticRegression(\n                   ^^^^^^^^^^^^^^^^^^^\nTypeError: LogisticRegression.__init__() got an unexpected keyword argument 'multi_class'\n",
+    "context_script": "import pandas as pd\nimport numpy as np\nfrom sklearn.compose import ColumnTransformer\nfrom sklearn.pipeline import Pipeline\nfrom sklearn.impute import SimpleImputer\nfrom sklearn.preprocessing import StandardScaler\nfrom sklearn.linear_model import LogisticRegression\nfrom xgboost import XGBClassifier\nfrom sklearn.model_selection import StratifiedKFold, cross_validate\n\n# --- 1. Preprocessing Setup ---\n\n# Define numerical features based on dataset description\nnumerical_features = ['Temperature', 'Lum..."
+  },
+  {
+    "hash": "9979794ef7315e28f70c2f4744e780c2",
+    "error": "    ('classifier', LogisticRegression(\n                   ^^^^^^^^^^^^^^^^^^^\nTypeError: LogisticRegression.__init__() got an unexpected keyword argument 'multi_class'",
+    "full_traceback": "STDOUT:\n\nSTDERR:\nTraceback (most recent call last):\n  File \"/home/salvatoreucchino/Scrivania/Projects/vibecoding-agents-capstone-project/kaggle-copilot/temp_validation.py\", line 35, in <module>\n    ('classifier', LogisticRegression(\n                   ^^^^^^^^^^^^^^^^^^^\nTypeError: LogisticRegression.__init__() got an unexpected keyword argument 'multi_class'\n",
+    "context_script": "import pandas as pd\nimport numpy as np\nfrom sklearn.model_selection import StratifiedKFold, cross_val_score\nfrom sklearn.preprocessing import StandardScaler, LabelEncoder\nfrom sklearn.impute import SimpleImputer\nfrom sklearn.compose import ColumnTransformer\nfrom sklearn.pipeline import Pipeline\nfrom sklearn.linear_model import LogisticRegression\nfrom xgboost import XGBClassifier\n\n# --- 1. Preprocessing Setup ---\n\n# All features are assumed to be numerical based on the description.\nnumerical_feat..."
+  }
+]
