@@ -1,125 +1,112 @@
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import StratifiedKFold, cross_validate
+from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
-from sklearn.datasets import make_classification
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.neural_network import MLPClassifier
 
-# --- 1. Data Generation ---
-# Create synthetic data matching the expected schema for multi-class classification
-# with mixed numerical/categorical features and introducing NaNs for pipeline testing.
+def load_titanic_data():
+    # Helper function to generate synthetic data matching the schema
+    n_samples = 100
+    data = {
+        'PassengerId': np.arange(n_samples),
+        'Survived': np.random.randint(0, 2, n_samples),
+        'Pclass': np.random.choice([1, 2, 3], n_samples, p=[0.2, 0.4, 0.4]),
+        'Name': [f'Mr. Test {i}' for i in range(n_samples)],
+        'Sex': np.random.choice(['male', 'female'], n_samples),
+        'Age': np.random.uniform(18, 65, n_samples),
+        'SibSp': np.random.randint(0, 4, n_samples),
+        'Parch': np.random.randint(0, 3, n_samples),
+        'Ticket': [f'TKT{i}' for i in range(n_samples)],
+        'Fare': np.random.lognormal(mean=3.5, sigma=0.8, size=n_samples),
+        'Cabin': np.random.choice([f'C{i}' for i in range(10)] + [np.nan], n_samples),
+        'Embarked': np.random.choice(['S', 'C', 'Q', np.nan], n_samples, p=[0.7, 0.15, 0.1, 0.05]),
+    }
+    df = pd.DataFrame(data)
 
-def generate_synthetic_data(n_samples=1000):
-    # Generate base synthetic numerical features and a multi-class target
-    X_synthetic, y_synthetic = make_classification(
-        n_samples=n_samples,
-        n_features=5, # Features for classification
-        n_informative=4,
-        n_redundant=0,
-        n_classes=3,
-        n_clusters_per_class=1,
-        random_state=42
-    )
+    # Introduce missing values for demonstration
+    df.loc[df.sample(frac=0.1, random_state=42).index, 'Age'] = np.nan
+    df.loc[df.sample(frac=0.02, random_state=42).index, 'Fare'] = np.nan
 
-    # Define feature names based on the astronomical context
-    numerical_features_synth = ['Temperature', 'Luminosity', 'Magnitude']
-    categorical_features_synth = ['Color', 'Band']
+    X = df.drop('Survived', axis=1)
+    y = df['Survived']
+    return X, y
 
-    X = pd.DataFrame(X_synthetic[:, :3], columns=numerical_features_synth)
-    
-    # Generate synthetic categorical features
-    np.random.seed(42)
-    X['Color'] = np.random.choice(['Red', 'Blue', 'Yellow', 'Unknown'], size=n_samples)
-    X['Band'] = np.random.choice(['UV', 'Visible', 'IR'], size=n_samples)
-    
-    # Introduce some missing values to test the imputers
-    X.loc[50:60, 'Temperature'] = np.nan
-    X.loc[100:110, 'Color'] = np.nan
+# Define feature sets
+numerical_features = ['Age', 'Fare', 'SibSp', 'Parch']
+categorical_features = ['Sex', 'Pclass', 'Embarked']
 
-    # Target variable mapping
-    target_map = {0: 'Star', 1: 'Galaxy', 2: 'QSO'}
-    y = pd.Series(y_synthetic, name='Stellar_Class').map(target_map)
-    
-    return X, y, numerical_features_synth, categorical_features_synth
+# Create numerical pipeline (Imputation -> Scaling)
+numerical_transformer = Pipeline(steps=[
+    ('imputer', SimpleImputer(strategy='median')),
+    ('scaler', StandardScaler())
+])
+
+# Create categorical pipeline (Imputation -> Encoding)
+categorical_transformer = Pipeline(steps=[
+    ('imputer', SimpleImputer(strategy='most_frequent')),
+    ('onehot', OneHotEncoder(handle_unknown='ignore'))
+])
+
+# Create the preprocessor using ColumnTransformer
+preprocessor = ColumnTransformer(
+    transformers=[
+        ('num', numerical_transformer, numerical_features),
+        ('cat', categorical_transformer, categorical_features)
+    ],
+    # Drop columns not explicitly handled (like Name, Ticket, Cabin, PassengerId)
+    remainder='drop'
+)
+
+# 1. Random Forest Pipeline (Non-linear Ensemble Baseline)
+pipeline_rf = Pipeline(steps=[
+    ('preprocessor', preprocessor),
+    ('classifier', RandomForestClassifier(random_state=42, n_estimators=100))
+])
+
+# 2. MLP Classifier Pipeline (Neural Network Baseline)
+# Addressing the human feedback requesting a neural network.
+pipeline_mlp = Pipeline(steps=[
+    ('preprocessor', preprocessor),
+    ('classifier', MLPClassifier(hidden_layer_sizes=(100,), max_iter=500, random_state=42, early_stopping=True))
+])
+
 
 if __name__ == '__main__':
-    X, y, numerical_features, categorical_features = generate_synthetic_data()
-    print(f"Synthetic data generated: X shape {X.shape}, y shape {y.shape}")
+    # Load synthetic data for verification
+    X, y = load_titanic_data()
 
-    # --- 2. Preprocessing Definition ---
+    # Define the cross-validation strategy
+    cv_strategy = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    results = {}
 
-    # Pipeline for numerical features (Impute median, then Scale)
-    numerical_pipeline = Pipeline([
-        ('imputer', SimpleImputer(strategy='median')),
-        ('scaler', StandardScaler())
-    ])
+    print("--- Starting Baseline Model Evaluation (5-Fold CV Accuracy) ---")
 
-    # Pipeline for categorical features (Impute most frequent, then One-Hot Encode)
-    categorical_pipeline = Pipeline([
-        ('imputer', SimpleImputer(strategy='most_frequent')),
-        ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
-    ])
+    # Evaluate Random Forest Classifier
+    print("Evaluating Random Forest Classifier...")
+    scores_rf = cross_val_score(
+        pipeline_rf, X, y, cv=cv_strategy, scoring='accuracy', n_jobs=-1
+    )
+    results["RandomForestClassifier_Mean_Accuracy"] = np.mean(scores_rf)
+    results["RandomForestClassifier_Std_Accuracy"] = np.std(scores_rf)
 
-    # Combine pipelines using ColumnTransformer
-    preprocessor = ColumnTransformer([
-        ('num', numerical_pipeline, numerical_features),
-        ('cat', categorical_pipeline, categorical_features)
-    ], remainder='passthrough')
+    # Evaluate MLP Classifier
+    print("Evaluating MLP Classifier (Neural Network)...")
+    scores_mlp = cross_val_score(
+        pipeline_mlp, X, y, cv=cv_strategy, scoring='accuracy', n_jobs=-1
+    )
+    results["MLPClassifier_Mean_Accuracy"] = np.mean(scores_mlp)
+    results["MLPClassifier_Std_Accuracy"] = np.std(scores_mlp)
 
-    # --- 3. Baseline Models ---
-
-    # 1. High-Performance Baseline: HistGradientBoostingClassifier
-    hgbc_pipeline = Pipeline(steps=[
-        ('preprocessor', preprocessor),
-        ('classifier', HistGradientBoostingClassifier(random_state=42))
-    ])
-
-    # 2. Robust Baseline: RandomForestClassifier
-    rfc_pipeline = Pipeline(steps=[
-        ('preprocessor', preprocessor),
-        ('classifier', RandomForestClassifier(random_state=42, n_estimators=100, n_jobs=-1))
-    ])
-
-    baselines = {
-        'HistGradientBoostingClassifier': hgbc_pipeline,
-        'RandomForestClassifier': rfc_pipeline
-    }
-
-    # --- 4. Evaluation ---
-
-    N_SPLITS = 5
-    cv_strategy = StratifiedKFold(n_splits=N_SPLITS, shuffle=True, random_state=42)
-    scoring_metrics = ['accuracy', 'neg_log_loss'] 
-    evaluation_results = {}
-
-    print(f"\nStarting {N_SPLITS}-Fold Stratified Cross-Validation on synthetic data (N={len(X)})...")
-
-    # Iterating through baseline models
-    for model_name, pipeline in baselines.items():
-        print(f"\nEvaluating: {model_name}")
-        
-        # Use cross_validate to get comprehensive scores and timing
-        scores = cross_validate(
-            estimator=pipeline, 
-            X=X, 
-            y=y, 
-            cv=cv_strategy, 
-            scoring=scoring_metrics, 
-            n_jobs=-1,
-            return_train_score=True
-        )
-        
-        # Store and print results
-        evaluation_results[model_name] = {
-            'Test_LogLoss_Mean': np.mean(scores['test_neg_log_loss']),
-            'Test_LogLoss_Std': np.std(scores['test_neg_log_loss']),
-            'Test_Accuracy_Mean': np.mean(scores['test_accuracy']),
-            'Fit_Time_Mean': np.mean(scores['fit_time']),
-        }
-        
-        print(f"--- Results for {model_name} ---")
-        print(f"Mean Test Log Loss: {-evaluation_results[model_name]['Test_LogLoss_Mean']:.4f} (+/- {evaluation_results[model_name]['Test_LogLoss_Std']:.4f})")
-        print(f"Mean Test Accuracy: {evaluation_results[model_name]['Test_Accuracy_Mean']:.4f}")
+    print("\nCross-Validation Results:")
+    print("==================================================")
+    for model in ["RandomForestClassifier", "MLPClassifier"]:
+        mean_score = results[f"{model}_Mean_Accuracy"]
+        std_score = results[f"{model}_Std_Accuracy"]
+        print(f"{model}:")
+        print(f"  Mean Accuracy: {mean_score:.4f}")
+        print(f"  Std Deviation: {std_score:.4f}")
+    print("==================================================")
