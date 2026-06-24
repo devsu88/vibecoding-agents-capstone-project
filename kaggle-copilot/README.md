@@ -28,10 +28,10 @@ graph TD
 ```
 
 ### Key Workflow Features:
-1.  **Dynamic Graph Workflow**: Implemented as an asynchronous ADK dynamic flow, preserving loop checkpointing and variable scopes natively.
-2.  **Scraping Tool**: Ingests direct page descriptions via `fetch_kaggle_competition_metadata` to bypass guessing or prompt hallucinations.
-3.  **SSRF & Host Injection Guardrails**: Enforces DNS-resolving checks against private subnet ranges (SSRF prevention) and strips malicious host parameters.
-4.  **Target-Leakage Protections**: Automatic generation of validation schemes (e.g. `TimeSeriesSplit` for temporal datasets, `StratifiedKFold` for class-imbalanced classification).
+1.  **Streamlit Chat Interface**: A custom, polished UI featuring a ChatGPT-like sidebar for managing persistent conversation histories (`conversations.json`) across sessions.
+2.  **Dynamic Graph Workflow**: Implemented as an asynchronous ADK dynamic flow, preserving loop checkpointing and variable scopes natively to support Human-in-the-loop (HITL) interactions.
+3.  **Scraping Tool**: Ingests direct page descriptions via `fetch_kaggle_competition_metadata` to bypass guessing or prompt hallucinations.
+4.  **Web Research**: Leverages `google_search` to actively research state-of-the-art model baselines tailored to the specific dataset structure and dynamically respects user-requested model constraints (e.g., forcing Neural Networks).
 5.  **Sandbox Self-Correction Loop**: Validates syntax and executes mock fits in a subprocess before presenting deliverables, allowing the models to automatically resolve errors.
 
 ---
@@ -42,6 +42,8 @@ graph TD
 kaggle-copilot/
 ├── app/                      # Core agent code
 │   └── agent.py              # Main agent workflow logic & tools
+├── streamlit_app.py          # Custom Streamlit Chat Frontend
+├── conversations.json        # Persistent chat history storage
 ├── .env                      # Local environment configurations
 ├── pyproject.toml            # Project dependencies
 └── README.md                 # Project guide
@@ -69,12 +71,13 @@ agents-cli install
 
 ## 🚀 Running the Agent
 
-Start the local interactive playground and web server:
+Start the local Streamlit application:
 ```bash
-agents-cli playground
+uv run streamlit run streamlit_app.py
 ```
 
-1. Open the local web interface link shown in the terminal.
-2. Submit a Kaggle URL (e.g. `https://www.kaggle.com/competitions/titanic`).
-3. Follow the execution logs. When prompted, reply with `approve` to finalize or type feedback to loop back and revise.
-4. Check your workspace for the automatically generated `baseline_solution.py` file.
+1. Open the local web interface link shown in the terminal (usually `http://localhost:8501`).
+2. Provide a Kaggle URL (e.g., `https://www.kaggle.com/competitions/titanic`) in the chat to begin.
+3. The agent will fetch the metadata, plan preprocessing, research models, and sandbox the generated code.
+4. When prompted by the agent, either reply with `approve` to finalize and write the script, or provide feedback (e.g., "Use XGBoost instead") to trigger a revision loop.
+5. You can seamlessly switch between past projects using the **Past Conversations** menu in the sidebar!
