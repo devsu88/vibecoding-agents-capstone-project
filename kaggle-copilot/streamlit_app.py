@@ -5,7 +5,7 @@ import streamlit as st
 from google.genai import types
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
-from app.agent import app as adk_app
+from app import app as adk_app
 
 import json
 
