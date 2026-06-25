@@ -282,15 +282,17 @@ async def ask_for_review(ctx: Context, node_input: KaggleState):
 # Deterministic File Writer Node (Only runs after user approval)
 @node(name="write_code_file_node", rerun_on_resume=True)
 async def write_code_file_node(ctx: Context, node_input: KaggleState) -> str:
-    """Writes the approved script from state.final_script to baseline_solution.py."""
+    """Writes the approved script and report to baseline_solution.py and baseline_report.md."""
     if not node_input.final_script.strip():
         return "No script to write."
     try:
         with open("baseline_solution.py", "w") as f:
             f.write(node_input.final_script)
-        return "Successfully wrote baseline_solution.py"
+        with open("baseline_report.md", "w") as f:
+            f.write(node_input.final_report)
+        return "Successfully wrote baseline_solution.py and baseline_report.md"
     except Exception as e:
-        return f"Failed to write file: {str(e)}"
+        return f"Failed to write files: {str(e)}"
 
 # Main Dynamic Orchestrator Workflow
 @node(name="kaggle_copilot_workflow", rerun_on_resume=True)
@@ -370,7 +372,18 @@ async def kaggle_copilot_workflow(ctx: Context, node_input: Any) -> str:
             ctx.state["step"] = "completed"
             ctx.state["kaggle_state"] = state.model_dump()
             
-            yield Event(output=state.final_report)
+            summary_message = (
+                "🎉 **Workflow Completed Successfully!**\n\n"
+                "Both your baseline script and the analysis report have been generated and saved to your workspace:\n"
+                "- 📄 **Python Script:** `baseline_solution.py`\n"
+                "- 📝 **Markdown Report:** `baseline_report.md`\n\n"
+                "You can open them directly from your editor. To iterate or refine the results further, simply type your request in the chat!"
+            )
+            yield Event(output={
+                "message": summary_message,
+                "final_script": state.final_script,
+                "final_report": state.final_report
+            })
             return
 
         elif ctx.state["step"] == "completed":

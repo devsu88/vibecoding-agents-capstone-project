@@ -21,7 +21,7 @@ def load_conversations():
             return {}
     return {}
 
-def save_conversation(session_id, messages):
+def save_conversation(session_id, messages, final_script=None, final_report=None):
     if not messages:
         return
     # Only save if there is at least one user message
@@ -35,7 +35,16 @@ def save_conversation(session_id, messages):
         if msg["role"] == "user":
             title = msg["content"][:30] + ("..." if len(msg["content"]) > 30 else "")
             break
-    convos[session_id] = {"title": title, "messages": messages}
+            
+    old_script = convos.get(session_id, {}).get("final_script")
+    old_report = convos.get(session_id, {}).get("final_report")
+    
+    convos[session_id] = {
+        "title": title, 
+        "messages": messages,
+        "final_script": final_script or old_script,
+        "final_report": final_report or old_report
+    }
     with open(CONVERSATIONS_FILE, "w") as f:
         json.dump(convos, f)
 
@@ -57,6 +66,12 @@ if "session_id" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = [WELCOME_MESSAGE]
 
+if "final_script" not in st.session_state:
+    st.session_state.final_script = None
+
+if "final_report" not in st.session_state:
+    st.session_state.final_report = None
+
 # To resume the workflow on RequestInput
 if "pending_interrupt_id" not in st.session_state:
     st.session_state.pending_interrupt_id = None
@@ -66,13 +81,43 @@ st.title("Kaggle Copilot Chat")
 with st.sidebar:
     if st.button("Start New Conversation", type="primary", use_container_width=True):
         if "messages" in st.session_state and st.session_state.messages:
-            save_conversation(st.session_state.session_id, st.session_state.messages)
+            save_conversation(
+                st.session_state.session_id, 
+                st.session_state.messages,
+                final_script=st.session_state.get("final_script"),
+                final_report=st.session_state.get("final_report")
+            )
         st.session_state.session_id = str(uuid.uuid4())
         st.session_state.messages = [WELCOME_MESSAGE]
+        st.session_state.final_script = None
+        st.session_state.final_report = None
         st.session_state.pending_interrupt_id = None
         st.rerun()
         
     st.divider()
+    
+    # Active conversation deliverables in sidebar
+    if st.session_state.get("final_script") or st.session_state.get("final_report"):
+        st.subheader("📎 Active Deliverables")
+        short_id = st.session_state.session_id[:6]
+        if st.session_state.get("final_script"):
+            st.download_button(
+                label="📥 Download Python Script",
+                data=st.session_state.final_script,
+                file_name=f"baseline_{short_id}.py",
+                mime="text/x-python",
+                use_container_width=True
+            )
+        if st.session_state.get("final_report"):
+            st.download_button(
+                label="📥 Download Markdown Report",
+                data=st.session_state.final_report,
+                file_name=f"report_{short_id}.md",
+                mime="text/markdown",
+                use_container_width=True
+            )
+        st.divider()
+
     st.subheader("Past Conversations")
     convos = load_conversations()
     if convos:
@@ -87,15 +132,24 @@ with st.sidebar:
                         delete_conversation(sid)
                         st.session_state.session_id = str(uuid.uuid4())
                         st.session_state.messages = [WELCOME_MESSAGE]
+                        st.session_state.final_script = None
+                        st.session_state.final_report = None
                         st.session_state.pending_interrupt_id = None
                         st.rerun()
             else:
                 # Inactive conversation: simple borderless text button
                 if st.button(data["title"], key=f"btn_{sid}", use_container_width=True, type="tertiary"):
                     if "messages" in st.session_state and st.session_state.messages:
-                        save_conversation(st.session_state.session_id, st.session_state.messages)
+                        save_conversation(
+                            st.session_state.session_id, 
+                            st.session_state.messages,
+                            final_script=st.session_state.get("final_script"),
+                            final_report=st.session_state.get("final_report")
+                        )
                     st.session_state.session_id = sid
                     st.session_state.messages = data["messages"]
+                    st.session_state.final_script = data.get("final_script")
+                    st.session_state.final_report = data.get("final_report")
                     st.session_state.pending_interrupt_id = None
                     st.rerun()
     else:
@@ -104,6 +158,33 @@ with st.sidebar:
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
+
+# Render inline deliverables block at the bottom of the chat history if they exist
+if st.session_state.get("final_script") or st.session_state.get("final_report"):
+    with st.chat_message("assistant"):
+        st.markdown("### 📎 Project Deliverables (Attachments)")
+        col1, col2 = st.columns(2)
+        short_id = st.session_state.session_id[:6]
+        with col1:
+            if st.session_state.get("final_script"):
+                st.download_button(
+                    label="📄 Download Python Script",
+                    data=st.session_state.final_script,
+                    file_name=f"baseline_{short_id}.py",
+                    mime="text/x-python",
+                    use_container_width=True,
+                    key="inline_btn_script"
+                )
+        with col2:
+            if st.session_state.get("final_report"):
+                st.download_button(
+                    label="📝 Download Markdown Report",
+                    data=st.session_state.final_report,
+                    file_name=f"report_{short_id}.md",
+                    mime="text/markdown",
+                    use_container_width=True,
+                    key="inline_btn_report"
+                )
 
 if "is_processing" not in st.session_state:
     st.session_state.is_processing = False
@@ -174,6 +255,12 @@ if st.session_state.is_processing and "pending_input" in st.session_state:
                     if isinstance(event.output, str):
                         full_response += "\n\n" + event.output + "\n"
                         st_placeholder.markdown(full_response + "▌")
+                    elif isinstance(event.output, dict):
+                        msg = event.output.get("message", "")
+                        st.session_state.final_script = event.output.get("final_script")
+                        st.session_state.final_report = event.output.get("final_report")
+                        full_response += "\n\n" + msg + "\n"
+                        st_placeholder.markdown(full_response + "▌")
 
                 if is_request_input:
                     if interrupt_id:
@@ -185,7 +272,13 @@ if st.session_state.is_processing and "pending_input" in st.session_state:
         
         st_placeholder.markdown(full_response)
         st.session_state.messages.append({"role": "assistant", "content": full_response})
-        save_conversation(st.session_state.session_id, st.session_state.messages)
+        
+        save_conversation(
+            st.session_state.session_id, 
+            st.session_state.messages,
+            final_script=st.session_state.get("final_script"),
+            final_report=st.session_state.get("final_report")
+        )
         
     st.session_state.is_processing = False
     st.rerun()

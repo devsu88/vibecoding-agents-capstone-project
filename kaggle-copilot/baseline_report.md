@@ -1,3 +1,27 @@
+## Final Project Summary: MNIST Digit Recognition
+
+This project addresses the multi-class image classification task of recognizing handwritten digits (0-9) using the MNIST dataset, formalized as a Kaggle competition challenge. The raw input consists of 784 pixel intensity features for 28x28 grayscale images.
+
+### Methodology and Pipeline Construction
+
+1.  **Preprocessing**: All 784 pixel features (initially 0-255) were scaled to the range [0.0, 1.0] using `MinMaxScaler`. This normalization is critical for optimizing gradient-based models like XGBoost and neural networks.
+2.  **Feature Engineering**: Two simple aggregate features were derived from the normalized pixel data to provide non-spatial context, primarily benefiting the non-CNN baseline:
+    *   **Total Intensity**: Sum of all pixel values.
+    *   **Pixel Density**: Count of pixels above a minimal threshold (0.01).
+3.  **Modeling Strategy (Baselines)**:
+    *   **XGBoost Classifier**: A robust traditional machine learning model was chosen, integrated into a `Pipeline` encompassing scaling, feature engineering, and classification. This model serves as an efficient and interpretable baseline.
+    *   **Convolutional Neural Network (CNN)**: A simple LeNet-inspired architecture was defined, which is the state-of-the-art approach for image data, requiring raw pixel normalization and one-hot encoding of labels.
+4.  **Evaluation**: The XGBoost Pipeline performance was rigorously assessed using Stratified 5-Fold Cross-Validation, ensuring balanced representation of all 10 digit classes across folds. The primary metric is classification accuracy.
+
+### Execution and Results
+
+The full runnable script loads `train.csv` and `test.csv`. The XGBoost pipeline successfully integrates the custom feature engineering step with the classification model. The cross-validation results provide a reliable estimate of the XGBoost baseline performance on the training data.
+
+*Note: The CNN model requires substantial training time (many epochs) to achieve competitive performance. The script includes the model definition and a quick 1-epoch training demonstration for structural completeness.*
+
+### Complete Python Script
+
+```python
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
@@ -165,3 +189,4 @@ if __name__ == '__main__':
     y_pred_cnn_probs = cnn_model.predict(X_test_cnn, verbose=0)
     y_pred_cnn = np.argmax(y_pred_cnn_probs, axis=1)
     print(f"CNN predictions generated for {len(y_pred_cnn)} samples.")
+```
