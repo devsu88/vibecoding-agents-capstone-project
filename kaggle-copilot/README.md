@@ -14,25 +14,28 @@ The Kaggle Copilot accepts a Kaggle competition link, automatically downloads th
 graph TD
     A[User Inputs URL] --> B[SSRF & URL Safe Check]
     B -->|Safe| C[Ingest Competition Metadata]
-    C --> D[Download Kaggle Dataset via API]
-    D -->|403 Error| D_Error[Interactive Retry Loop for Rules Acceptance]
-    D_Error --> D
-    D -->|Success| E[Identify Problem & EDA Plan]
+    C --> D[Ask User to Download Dataset]
+    D -->|Yes| E[Download Kaggle Dataset via API]
+    E -->|403 Error| E_Error[Interactive Retry Loop for Rules Acceptance]
+    E_Error --> E
+    E_Error -->|Skip| F
+    D -->|No / Skip| F[Identify Problem & EDA Plan]
+    E -->|Success| F
     E --> F[Preprocessing & Feature Engineering]
     F --> G[DuckDuckGo Research & Ensemble Modeling]
     G --> H[Cross Validation & Metric Setup]
     H --> I[Combine & Generate Script]
     I --> J[Code Critic Node]
     J --> K[Ask for Review HITL]
-    K -->|Revise| F
+    K -->|Revise| G
     K -->|Approve| L[Write Python Script, Markdown & Jupyter Notebook]
-    L -->|Continuous Refinement| F
+    L -->|Continuous Refinement| G
 ```
 
 ### Key Workflow Features:
 1.  **Streamlit Chat Interface**: A custom, polished UI featuring a ChatGPT-like sidebar for managing persistent conversation histories (`conversations.json`) across sessions.
 2.  **Fully Modular Architecture**: The core logic is cleanly separated using the Single Responsibility Principle into `schema.py`, `tools.py`, `agents.py`, `nodes.py`, and the orchestrator `workflow.py`.
-3.  **Automated Dataset Ingestion**: Uses the official `kaggle` Python API to download and extract ZIP datasets. Features a graceful interactive loop that pauses and guides the user if a 403 Forbidden error occurs (requiring manual Kaggle rule acceptance).
+3.  **Automated & Interactive Dataset Ingestion**: Uses the official `kaggle` Python API to download and extract ZIP datasets in a non-blocking background thread. Includes a Human-In-The-Loop prompt allowing the user to skip the download, as well as a graceful interactive loop that pauses and guides the user if a 403 Forbidden error occurs (requiring manual Kaggle rule acceptance).
 4.  **Targeted Web Research**: Features an internally decoupled modeling node that transparently leverages DuckDuckGo Search (`ddgs`) to research state-of-the-art baselines and provide verifiable Markdown links as sources.
 5.  **Multi-format Output**: Upon human approval, the system generates a raw Python script (`baseline_solution.py`), a comprehensive report (`baseline_report.md`), and a fully executable Jupyter Notebook (`baseline_solution.ipynb`).
 6.  **Code Critic Reviewer**: An independent "Grandmaster" agent critiques the generated code for data leakage and common pitfalls before presenting it to the user.
@@ -87,6 +90,6 @@ uv run streamlit run streamlit_app.py
 
 1. Open the local web interface link shown in the terminal (usually `http://localhost:8501`).
 2. Provide a Kaggle URL (e.g., `https://www.kaggle.com/competitions/digit-recognizer`) in the chat to begin.
-3. The agent will fetch the metadata, automatically download the `.csv` files, research models, and generate the final code.
+3. The agent will fetch the metadata, ask if you want to download the data locally, research models, and generate the final code.
 4. When prompted by the agent, either reply with `approve` to finalize and save the files, or provide feedback (e.g., "Use XGBoost instead") to trigger a revision loop.
 5. You can seamlessly switch between past projects using the **Past Conversations** menu in the sidebar!
