@@ -20,7 +20,6 @@ import json
 import socket
 import hashlib
 import ipaddress
-import subprocess
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -37,75 +36,20 @@ from google.adk.workflow import node
 
 load_dotenv()
 
-KB_FILE = "knowledge_base.json"
-
 class KaggleState(BaseModel):
     input_text: str = ""
     dataset_characteristics: str = ""
     problem_type_patterns: str = ""
     preprocessing_strategy: str = ""
     preprocessing_code: str = ""
+    feature_engineering_strategy: str = ""
+    feature_engineering_code: str = ""
     baseline_strategies: str = ""
     baseline_code: str = ""
     evaluation_code: str = ""
     final_script: str = ""
     human_feedback: str = ""
-    past_mistakes: str = ""
-    model_research_notes: str = ""
-    verification_passed: bool = False
-    verification_error: str = ""
     final_report: str = ""
-
-def record_sandbox_error(error_msg: str, script: str):
-    """Saves a unique error to the knowledge base to prevent future recurrence."""
-    kb = []
-    if os.path.exists(KB_FILE):
-        try:
-            with open(KB_FILE, "r") as f:
-                kb = json.load(f)
-        except Exception:
-            pass
-            
-    # Hash the core error to avoid duplicates
-    lines = error_msg.strip().split('\n')
-    core_error = "\n".join(lines[-3:]) if len(lines) > 3 else error_msg
-    error_hash = hashlib.md5(core_error.encode()).hexdigest()
-    
-    if any(entry.get("hash") == error_hash for entry in kb):
-        return
-        
-    entry = {
-        "hash": error_hash,
-        "error": core_error,
-        "full_traceback": error_msg[-1000:], 
-        "context_script": script[:500] + "..."
-    }
-    kb.append(entry)
-    
-    # Keep only the latest 15 errors to avoid context window bloat
-    kb = kb[-15:]
-    
-    try:
-        with open(KB_FILE, "w") as f:
-            json.dump(kb, f, indent=2)
-    except Exception:
-        pass
-
-def read_past_mistakes() -> str:
-    """Reads past errors to inject into the generator prompt."""
-    if not os.path.exists(KB_FILE):
-        return ""
-    try:
-        with open(KB_FILE, "r") as f:
-            kb = json.load(f)
-        if not kb:
-            return ""
-        mistakes = []
-        for i, entry in enumerate(kb):
-            mistakes.append(f"Historical Error {i+1}: {entry.get('error', '')}")
-        return "\n\n".join(mistakes)
-    except Exception:
-        return ""
 
 def fetch_kaggle_competition_metadata(url: str) -> str:
     """Fetches the title and description from a Kaggle competition webpage.
@@ -169,7 +113,12 @@ eda_node = create_agent(
 
 preprocessing_node = create_agent(
     "preprocessing_node",
-    "Generate a basic preprocessing pipeline (imputation, encoding, scaling) suitable for the dataset. Consider any `human_feedback` if provided. Check `past_mistakes` to avoid known API errors. Update `preprocessing_strategy` with descriptions and write the scikit-learn column transformer code in `preprocessing_code`. Retain other fields."
+    "Generate a basic preprocessing pipeline (imputation, encoding, scaling) suitable for the dataset. Consider any `human_feedback` if provided. Update `preprocessing_strategy` with descriptions and write the scikit-learn column transformer code in `preprocessing_code`. Retain other fields."
+)
+
+feature_engineering_node = create_agent(
+    "feature_engineering_node",
+    "Based on `dataset_characteristics` and `problem_type_patterns`, propose domain-specific feature engineering (e.g., aggregations, date parts, interactions, target encoding). Write the python code extending the preprocessing pipeline or as standalone pandas logic in `feature_engineering_code` and describe the strategy in `feature_engineering_strategy`. Consider `human_feedback`. Retain other fields."
 )
 
 from google.adk.tools import google_search
@@ -177,30 +126,43 @@ from google.adk.tools import google_search
 model_research_agent = Agent(
     name="model_research_agent",
     model=Gemini(model="gemini-flash-latest"),
-    instruction="Use the google_search tool to research models for the provided machine learning problem context. Return a concise summary of the top recommended models and their scikit-learn equivalents. IMPORTANT: You MUST strictly adhere to any requested model types or constraints specified in the prompt's 'Human Feedback / Constraints' section. If the user asks for Neural Networks, you MUST recommend Neural Networks.",
+    instruction="Use the google_search tool to research the best modeling approaches for the provided ML problem context. Then, decide on a modeling strategy (e.g., 1-2 strong baseline models, or a combination like Voting/Stacking ensemble). For tabular data, strongly prefer Gradient Boosting libraries (LightGBM, XGBoost, CatBoost). Consider `human_feedback`. Return a concise strategy summary.",
     tools=[google_search]
 )
 
-@node(name="model_research_node", rerun_on_resume=True)
-async def model_research_node(ctx: Context, node_input: KaggleState) -> KaggleState:
+baseline_model_agent = create_agent(
+    "baseline_model_agent",
+    "Based on the provided research results (appended to `problem_type_patterns`), write the complete model instantiation and ensemble code in `baseline_code`. Update `baseline_strategies` with the chosen strategy. Retain other fields."
+)
+
+@node(name="baseline_model_node", rerun_on_resume=True)
+async def baseline_model_node(ctx: Context, node_input: KaggleState) -> KaggleState:
+    # 1. Research phase (no structured schema, so tool works)
     prompt = f"Dataset: {node_input.dataset_characteristics}\nProblem: {node_input.problem_type_patterns}"
     if node_input.human_feedback:
         prompt += f"\nHuman Feedback / Constraints: {node_input.human_feedback}"
+        
     res = await ctx.run_node(model_research_agent, node_input=prompt)
-    node_input.model_research_notes = extract_text(res)
-    return node_input
-
-baseline_model_node = create_agent(
-    "baseline_model_node",
-    "Select and configure 1-2 strong baseline models based on the research provided in `model_research_notes` for this ML problem. Check `past_mistakes` to avoid known API deprecations. Consider any `human_feedback` provided by the user, especially if they requested specific models. Update `baseline_strategies` with descriptions and write the scikit-learn model instantiation in `baseline_code`. Retain other fields."
-)
+    research_results = extract_text(res)
+    
+    # 2. Generation phase (structured output schema)
+    modified_state = KaggleState(**node_input.model_dump())
+    modified_state.problem_type_patterns += f"\n\n--- RESEARCH STRATEGY ---\n{research_results}"
+    
+    # Run the agent to generate the code
+    final_res = await ctx.run_node(baseline_model_agent, node_input=modified_state)
+    final_state = to_state(final_res)
+    
+    # Clean up the injected research from the state so it doesn't clutter the next nodes
+    final_state.problem_type_patterns = node_input.problem_type_patterns
+    return final_state
 
 evaluation_node = create_agent(
     "evaluation_node",
     (
         "Evaluate the trained model conceptually and programmatically. "
         "Select the right split strategy (e.g., StratifiedKFold, TimeSeriesSplit) to prevent target leakage. "
-        "Check `past_mistakes` and `human_feedback` to avoid known metric or splitting errors. "
+        "Check `human_feedback` to avoid known metric or splitting errors. "
         "Write the scikit-learn cross-validation code to `evaluation_code`. Retain other fields."
     )
 )
@@ -209,15 +171,13 @@ report_generator_node = create_agent(
     "report_generator_node",
     (
         "You are the final compiler. Produce a final structured summary. Combine the `preprocessing_code`, "
-        "`baseline_code`, and `evaluation_code` into a complete runnable script. "
-        "IMPORTANT: If `human_feedback` contains verification errors, you MUST analyze the traceback and FIX the bugs "
-        "in the final script instead of blindly combining the broken snippets! Check `past_mistakes` to avoid known errors.\n"
+        "`feature_engineering_code`, `baseline_code`, and `evaluation_code` into a complete runnable script. "
+        "IMPORTANT: Integrate any changes requested in `human_feedback` instead of blindly combining the snippets.\n"
         "You MUST include this complete python block (wrapped in markdown code blocks) at the bottom of the `final_report` string, "
         "and save the exact same complete python script in the `final_script` field.\n"
-        "Guidelines for Executable Verification:\n"
+        "Guidelines for the Final Script:\n"
         "1. The final script MUST be fully self-contained and runnable.\n"
-        "2. If `__name__ == '__main__'` is triggered, generate a small synthetic dataset matching the schema, "
-        "instantiate pipelines, and execute cross-validation. Do not reference undefined variables like `X_train`.\n"
+        "2. If `__name__ == '__main__'` is triggered, write code to load the actual dataset from 'train.csv' and 'test.csv' using pandas (e.g., `pd.read_csv('train.csv')`). Do not generate synthetic data.\n"
         "Update ONLY `final_report` and `final_script` and retain all other fields."
     )
 )
@@ -311,55 +271,13 @@ async def ask_for_url(ctx: Context, message: str = "Please provide a valid Kaggl
 
 @node(name="ask_for_review", rerun_on_resume=False)
 async def ask_for_review(ctx: Context, node_input: KaggleState):
-    warning = ""
-    if not node_input.verification_passed:
-        warning = (
-            "⚠️ WARNING: The generated code failed automated sandbox verification after 3 attempts!\n"
-            f"Final Error Traceback:\n{node_input.verification_error}\n\n"
-        )
-        
     message = (
-        f"{warning}"
         f"Problem Type: {node_input.problem_type_patterns}\n"
         f"Preprocessing: {node_input.preprocessing_strategy}\n"
         f"Models: {node_input.baseline_strategies}\n\n"
         "Do you approve this plan and code? (Reply 'approve' to save to file, or provide feedback for revision)"
     )
     yield RequestInput(message=message)
-
-# Automated Sandbox Execution Verification Node (tests script in-memory/temp files)
-@node(name="verify_code_node", rerun_on_resume=True)
-async def verify_code_node(ctx: Context, node_input: KaggleState) -> tuple[bool, str]:
-    """Executes state.final_script in a temporary validation file to check for errors."""
-    if not node_input.final_script.strip():
-        return False, "No script found in state.final_script to verify."
-        
-    temp_path = "temp_validation.py"
-    try:
-        with open(temp_path, "w") as f:
-            f.write(node_input.final_script)
-            
-        res = subprocess.run(
-            [sys.executable, temp_path],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-            
-        if res.returncode == 0:
-            return True, "Execution verified successfully."
-        else:
-            return False, f"STDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}"
-    except subprocess.TimeoutExpired:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-        return False, "Execution timed out (10s limit exceeded)."
-    except Exception as e:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-        return False, f"Failed to execute verification sandbox: {str(e)}"
 
 # Deterministic File Writer Node (Only runs after user approval)
 @node(name="write_code_file_node", rerun_on_resume=True)
@@ -408,26 +326,11 @@ async def kaggle_copilot_workflow(ctx: Context, node_input: Any) -> str:
             ctx.state["kaggle_state"] = state.model_dump()
 
         elif ctx.state["step"] == "modeling_loop":
-            state.past_mistakes = read_past_mistakes()
             state = to_state(await ctx.run_node(preprocessing_node, state))
-            state = to_state(await ctx.run_node(model_research_node, state))
+            state = to_state(await ctx.run_node(feature_engineering_node, state))
             state = to_state(await ctx.run_node(baseline_model_node, state))
             state = to_state(await ctx.run_node(evaluation_node, state))
             state = to_state(await ctx.run_node(report_generator_node, state))
-            
-            for attempt in range(3):
-                success, err_msg = await ctx.run_node(verify_code_node, state)
-                if success:
-                    state.verification_passed = True
-                    state.verification_error = ""
-                    break
-                record_sandbox_error(err_msg, state.final_script)
-                state.human_feedback = f"CODE VERIFICATION FAILED (Attempt {attempt+1}/3).\n{err_msg}"
-                state.past_mistakes = read_past_mistakes()
-                state = to_state(await ctx.run_node(report_generator_node, state))
-            else:
-                state.verification_passed = False
-                state.verification_error = err_msg
 
             ctx.state["step"] = "ask_review"
             ctx.state["kaggle_state"] = state.model_dump()
@@ -440,12 +343,7 @@ async def kaggle_copilot_workflow(ctx: Context, node_input: Any) -> str:
                 # FIRST TIME: Yield RequestInput
                 ctx.state["ask_review_yielded"] = True
                 
-                warning = ""
-                if not state.verification_passed:
-                    warning = f"⚠️ WARNING: Code failed automated sandbox verification!\nFinal Error Traceback:\n{state.verification_error}\n\n"
-                
                 message = (
-                    f"{warning}"
                     f"Problem Type: {state.problem_type_patterns}\n"
                     f"Preprocessing: {state.preprocessing_strategy}\n"
                     f"Models: {state.baseline_strategies}\n\n"
@@ -467,15 +365,24 @@ async def kaggle_copilot_workflow(ctx: Context, node_input: Any) -> str:
                     ctx.state["kaggle_state"] = state.model_dump()
 
         elif ctx.state["step"] == "finalize":
-            if state.verification_passed:
-                await ctx.run_node(write_code_file_node, state)
-            else:
-                await ctx.run_node(write_code_file_node, state)
+            await ctx.run_node(write_code_file_node, state)
             
-            from google.genai import types
-            yield Event(content=types.Content(role="model", parts=[types.Part.from_text(text=state.final_report)]))
+            ctx.state["step"] = "completed"
+            ctx.state["kaggle_state"] = state.model_dump()
+            
             yield Event(output=state.final_report)
             return
+
+        elif ctx.state["step"] == "completed":
+            # If the user sends a message after the workflow has finished, treat it as refinement feedback
+            feedback = extract_text(node_input)
+            if feedback.strip():
+                state.human_feedback = feedback
+                ctx.state["step"] = "modeling_loop"
+                ctx.state["kaggle_state"] = state.model_dump()
+                continue
+            else:
+                return
 
 # Setup the root agent and expose the App
 root_agent = Workflow(

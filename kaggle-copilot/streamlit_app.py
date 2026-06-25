@@ -161,7 +161,7 @@ if st.session_state.is_processing and "pending_input" in st.session_state:
                             text_val = part.text
                             if text_val.strip().startswith("{") and '"input_text"' in text_val:
                                 author = getattr(event, "author", "Agent")
-                                text_val = f"*{author} finished reasoning step.*\n"
+                                text_val = f"\n*{author} finished reasoning step.*\n"
                             
                             full_response += text_val + "\n"
                             st_placeholder.markdown(full_response + "▌")
