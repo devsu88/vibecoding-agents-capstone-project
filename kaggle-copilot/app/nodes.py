@@ -67,13 +67,16 @@ async def baseline_model_node(ctx: Context, node_input: KaggleState) -> KaggleSt
     final_state.problem_type_patterns = node_input.problem_type_patterns
     return final_state
 
+import asyncio
+
 @node(name="download_dataset_node", rerun_on_resume=True)
 async def download_dataset_node(ctx: Context, node_input: KaggleState) -> KaggleState:
     """
     Executes the dataset download using the Kaggle API.
     
-    We use a pure Python node instead of an LLM agent for this to avoid LLM timeouts 
-    when downloading large multi-gigabyte datasets.
+    We use asyncio.to_thread to run the synchronous Kaggle API call in a background 
+    thread. This prevents the download of large datasets from blocking the main 
+    asyncio event loop (which would freeze the Streamlit UI).
     
     Args:
         ctx (Context): The ADK execution context.
@@ -82,7 +85,7 @@ async def download_dataset_node(ctx: Context, node_input: KaggleState) -> Kaggle
     Returns:
         KaggleState: The identical state, with the download status string stored in ctx.state.
     """
-    res = download_kaggle_competition_data(node_input.input_text)
+    res = await asyncio.to_thread(download_kaggle_competition_data, node_input.input_text)
     # Save the status in the context so the orchestrator can inspect it for errors (e.g. 403)
     ctx.state["download_status"] = res
     return node_input

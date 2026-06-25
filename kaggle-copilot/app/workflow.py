@@ -79,30 +79,60 @@ async def kaggle_copilot_workflow(ctx: Context, node_input: Any) -> str:
                 yield RequestInput(interrupt_id="url_input", message="Please provide a valid Kaggle competition URL to proceed.")
                 return
 
-        # Phase 2: Metadata extraction, data downloading, and initial EDA
+        # Phase 2: Metadata extraction
         elif ctx.state["step"] == "process_url":
             if not ctx.state.get("metadata_extracted", False):
                 state = to_state(await ctx.run_node(competition_ingestion_node, state))
                 ctx.state["metadata_extracted"] = True
             
-            # Interactive retry loop for dataset downloading (handles Kaggle 403 Forbidden rules)
-            if not ctx.state.get("dataset_downloaded", False):
-                state = to_state(await ctx.run_node(download_dataset_node, state))
-                res = ctx.state.get("download_status", "")
-                if "403" in res or "Forbidden" in res:
-                    yield RequestInput(message="⚠️ **Azione Richiesta:** L'API di Kaggle ha restituito un errore 403 (Forbidden). Questo accade perché non hai ancora accettato il regolamento della competizione.\n\nVai alla pagina 'Rules' della competizione su Kaggle, clicca su **'I Understand and Accept'**, e scrivi 'fatto' qui per riprovare il download.")
-                    return
-                elif "Error" in res:
-                    yield RequestInput(message=f"⚠️ **Errore di download:** {res}\n\nRisolvi il problema e scrivi 'riprova' per continuare.")
-                    return
-                ctx.state["dataset_downloaded"] = True
-
-            state = to_state(await ctx.run_node(problem_understanding_node, state))
-            state = to_state(await ctx.run_node(eda_node, state))
-            
-            # Move to the modeling loop
-            ctx.state["step"] = "modeling_loop"
+            # Transition to the interactive download prompt
+            ctx.state["step"] = "ask_download"
             ctx.state["kaggle_state"] = state.model_dump()
+            
+        # Phase 2.5: Interactive Dataset Download Decision
+        elif ctx.state["step"] == "ask_download":
+            if not ctx.state.get("ask_download_yielded", False):
+                ctx.state["ask_download_yielded"] = True
+                yield RequestInput(interrupt_id="ask_download", message="Do you want me to download the dataset locally in this workspace so you can test the code immediately? (Reply 'yes' or 'no')")
+                return
+            else:
+                feedback = extract_text(node_input).strip().lower()
+                
+                # If the user says NO, skip download
+                if feedback in ["no", "n", "skip"]:
+                    ctx.state["ask_download_yielded"] = False # reset
+                    ctx.state["dataset_downloaded"] = False
+                    
+                    # Proceed to modeling
+                    state = to_state(await ctx.run_node(problem_understanding_node, state))
+                    state = to_state(await ctx.run_node(eda_node, state))
+                    ctx.state["step"] = "modeling_loop"
+                    ctx.state["kaggle_state"] = state.model_dump()
+                    
+                # If the user says YES (or anything else like "fatto" during a retry)
+                else:
+                    ctx.state["ask_download_yielded"] = False # reset
+                    
+                    if not ctx.state.get("dataset_downloaded", False):
+                        state = to_state(await ctx.run_node(download_dataset_node, state))
+                        res = ctx.state.get("download_status", "")
+                        
+                        if "403" in res or "Forbidden" in res:
+                            ctx.state["ask_download_yielded"] = True # keep yielded to loop back here
+                            yield RequestInput(message="⚠️ **Action Required:** The Kaggle API returned a 403 (Forbidden) error. This happens because you haven't accepted the competition rules yet.\n\nPlease go to the 'Rules' page of the competition on Kaggle, click **'I Understand and Accept'**, and reply 'yes' here to retry the download (or 'no' to skip the download and continue).")
+                            return
+                        elif "Error" in res:
+                            ctx.state["ask_download_yielded"] = True
+                            yield RequestInput(message=f"⚠️ **Download Error:** {res}\n\nPlease resolve the issue and reply 'yes' to retry (or 'no' to skip the download and continue).")
+                            return
+                            
+                        ctx.state["dataset_downloaded"] = True
+
+                    # Move to the modeling loop
+                    state = to_state(await ctx.run_node(problem_understanding_node, state))
+                    state = to_state(await ctx.run_node(eda_node, state))
+                    ctx.state["step"] = "modeling_loop"
+                    ctx.state["kaggle_state"] = state.model_dump()
 
         # Phase 3: The Modeling Loop (preprocessing, feature engineering, modeling, review)
         elif ctx.state["step"] == "modeling_loop":
