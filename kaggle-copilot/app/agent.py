@@ -23,6 +23,11 @@ import ipaddress
 import urllib.request
 import urllib.parse
 import urllib.error
+import subprocess
+import zipfile
+import nbformat
+from kaggle.api.kaggle_api_extended import KaggleApi
+from nbformat.v4 import new_notebook, new_markdown_cell, new_code_cell
 from dotenv import load_dotenv
 from typing import Any
 from pydantic import BaseModel
@@ -50,6 +55,9 @@ class KaggleState(BaseModel):
     final_script: str = ""
     human_feedback: str = ""
     final_report: str = ""
+    critic_feedback: str = ""
+    final_notebook: str = ""
+    research_sources: str = ""
 
 def fetch_kaggle_competition_metadata(url: str) -> str:
     """Fetches the title and description from a Kaggle competition webpage.
@@ -121,13 +129,22 @@ feature_engineering_node = create_agent(
     "Based on `dataset_characteristics` and `problem_type_patterns`, propose domain-specific feature engineering (e.g., aggregations, date parts, interactions, target encoding). Write the python code extending the preprocessing pipeline or as standalone pandas logic in `feature_engineering_code` and describe the strategy in `feature_engineering_strategy`. Consider `human_feedback`. Retain other fields."
 )
 
-from google.adk.tools import google_search
+from ddgs import DDGS
+import json
+
+def custom_web_search(query: str) -> str:
+    """Searches the web for the given query and returns a JSON string containing titles, URLs, and snippets."""
+    try:
+        results = DDGS().text(query, max_results=3)
+        return json.dumps(results)
+    except Exception as e:
+        return f"Error performing search: {str(e)}"
 
 model_research_agent = Agent(
     name="model_research_agent",
     model=Gemini(model="gemini-flash-latest"),
-    instruction="Use the google_search tool to research the best modeling approaches for the provided ML problem context. Then, decide on a modeling strategy (e.g., 1-2 strong baseline models, or a combination like Voting/Stacking ensemble). For tabular data, strongly prefer Gradient Boosting libraries (LightGBM, XGBoost, CatBoost). Consider `human_feedback`. Return a concise strategy summary.",
-    tools=[google_search]
+    instruction="Use the custom_web_search tool to research the best modeling approaches for the provided ML problem context. Then, decide on a modeling strategy (e.g., 1-2 strong baseline models, or a combination like Voting/Stacking ensemble). For tabular data, strongly prefer Gradient Boosting libraries (LightGBM, XGBoost, CatBoost). Consider `human_feedback`. IMPORTANT: You MUST include a 'SOURCES:' section at the very end of your response listing the sources you consulted. Format each source as a markdown link: `- [Title](URL)`. Return a concise strategy summary.",
+    tools=[custom_web_search]
 )
 
 baseline_model_agent = create_agent(
@@ -145,6 +162,17 @@ async def baseline_model_node(ctx: Context, node_input: KaggleState) -> KaggleSt
     res = await ctx.run_node(model_research_agent, node_input=prompt)
     research_results = extract_text(res)
     
+    # Extract sources from research_results if any
+    sources = ""
+    if "SOURCES:" in research_results:
+        parts = research_results.split("SOURCES:")
+        research_results = parts[0].strip()
+        sources = parts[1].strip()
+    elif "Sources:" in research_results:
+        parts = research_results.split("Sources:")
+        research_results = parts[0].strip()
+        sources = parts[1].strip()
+    
     # 2. Generation phase (structured output schema)
     modified_state = KaggleState(**node_input.model_dump())
     modified_state.problem_type_patterns += f"\n\n--- RESEARCH STRATEGY ---\n{research_results}"
@@ -152,6 +180,9 @@ async def baseline_model_node(ctx: Context, node_input: KaggleState) -> KaggleSt
     # Run the agent to generate the code
     final_res = await ctx.run_node(baseline_model_agent, node_input=modified_state)
     final_state = to_state(final_res)
+    
+    # Keep the sources
+    final_state.research_sources = sources
     
     # Clean up the injected research from the state so it doesn't clutter the next nodes
     final_state.problem_type_patterns = node_input.problem_type_patterns
@@ -180,6 +211,11 @@ report_generator_node = create_agent(
         "2. If `__name__ == '__main__'` is triggered, write code to load the actual dataset from 'train.csv' and 'test.csv' using pandas (e.g., `pd.read_csv('train.csv')`). Do not generate synthetic data.\n"
         "Update ONLY `final_report` and `final_script` and retain all other fields."
     )
+)
+
+code_critic_node = create_agent(
+    "code_critic_node",
+    "You are a Senior Kaggle Grandmaster acting as a Code Critic. Review the generated `final_script` and `final_report` for common pitfalls like data leakage, weak cross-validation, missing imports, or inefficient Pandas operations. If you find issues, write a brief, constructive 'Critic's Note' in `critic_feedback` (max 2-3 sentences). If the code is perfect, leave `critic_feedback` empty. Do NOT modify the code yourself. Retain other fields."
 )
 
 # Helper function to extract text from raw playground Content input
@@ -264,6 +300,43 @@ def extract_and_validate_kaggle_url(text: str) -> tuple[str | None, bool]:
             
     return None, False
 
+def download_kaggle_competition_data(url: str) -> str:
+    """Downloads and extracts the dataset for a Kaggle competition using the Kaggle API.
+    
+    Args:
+        url: The full Kaggle competition URL to download (e.g. https://www.kaggle.com/competitions/titanic).
+        
+    Returns:
+        A string indicating the success or failure of the download and extraction process.
+    """
+    slug_match = re.search(r'/(?:competitions|c|datasets)/([\w-]+)', url)
+    if not slug_match:
+        return "Error: Could not extract competition slug from URL."
+    
+    slug = slug_match.group(1)
+    
+    try:
+        api = KaggleApi()
+        api.authenticate()
+        
+        api.competition_download_files(slug, path='.', force=False, quiet=True)
+        
+        zip_path = f"{slug}.zip"
+        if os.path.exists(zip_path):
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall('.')
+            return f"Successfully downloaded and extracted dataset for {slug}."
+        else:
+            return f"Successfully downloaded dataset for {slug}, but no zip file was found."
+    except Exception as e:
+        return f"Error downloading dataset: {str(e)}"
+
+@node(name="download_dataset_node", rerun_on_resume=True)
+async def download_dataset_node(ctx: Context, node_input: KaggleState) -> KaggleState:
+    # Use the python API directly to avoid LLM timeouts for large files
+    download_kaggle_competition_data(node_input.input_text)
+    return node_input
+
 # Interactive nodes decorated with @node(rerun_on_resume=False)
 @node(name="ask_for_url", rerun_on_resume=False)
 async def ask_for_url(ctx: Context, message: str = "Please provide a valid Kaggle competition URL to proceed."):
@@ -271,28 +344,51 @@ async def ask_for_url(ctx: Context, message: str = "Please provide a valid Kaggl
 
 @node(name="ask_for_review", rerun_on_resume=False)
 async def ask_for_review(ctx: Context, node_input: KaggleState):
+    critic_note = ""
+    if node_input.critic_feedback:
+        critic_note = f"\n\n🕵️‍♂️ **Critic's Note:** {node_input.critic_feedback}\n"
+        
+    sources_note = ""
+    if node_input.research_sources:
+        sources_note = f"\n\n🔗 **Research Sources:**\n{node_input.research_sources}\n"
+        
     message = (
         f"Problem Type: {node_input.problem_type_patterns}\n"
         f"Preprocessing: {node_input.preprocessing_strategy}\n"
-        f"Models: {node_input.baseline_strategies}\n\n"
+        f"Models: {node_input.baseline_strategies}"
+        f"{critic_note}"
+        f"{sources_note}\n\n"
         "Do you approve this plan and code? (Reply 'approve' to save to file, or provide feedback for revision)"
     )
     yield RequestInput(message=message)
 
 # Deterministic File Writer Node (Only runs after user approval)
 @node(name="write_code_file_node", rerun_on_resume=True)
-async def write_code_file_node(ctx: Context, node_input: KaggleState) -> str:
-    """Writes the approved script and report to baseline_solution.py and baseline_report.md."""
+async def write_code_file_node(ctx: Context, node_input: KaggleState) -> KaggleState:
+    """Writes the approved script and report to files, and creates a Jupyter Notebook."""
     if not node_input.final_script.strip():
-        return "No script to write."
+        return node_input
     try:
+        # Write flat files
         with open("baseline_solution.py", "w") as f:
             f.write(node_input.final_script)
         with open("baseline_report.md", "w") as f:
             f.write(node_input.final_report)
-        return "Successfully wrote baseline_solution.py and baseline_report.md"
+            
+        # Create Jupyter Notebook
+        nb = new_notebook()
+        nb.cells.append(new_markdown_cell(node_input.final_report))
+        nb.cells.append(new_code_cell(node_input.final_script))
+        
+        nb_content = nbformat.writes(nb)
+        with open("baseline_solution.ipynb", "w") as f:
+            f.write(nb_content)
+            
+        node_input.final_notebook = nb_content
     except Exception as e:
-        return f"Failed to write files: {str(e)}"
+        print(f"Failed to write files: {e}")
+        
+    return node_input
 
 # Main Dynamic Orchestrator Workflow
 @node(name="kaggle_copilot_workflow", rerun_on_resume=True)
@@ -322,6 +418,7 @@ async def kaggle_copilot_workflow(ctx: Context, node_input: Any) -> str:
 
         elif ctx.state["step"] == "process_url":
             state = to_state(await ctx.run_node(competition_ingestion_node, state))
+            state = to_state(await ctx.run_node(download_dataset_node, state))
             state = to_state(await ctx.run_node(problem_understanding_node, state))
             state = to_state(await ctx.run_node(eda_node, state))
             ctx.state["step"] = "modeling_loop"
@@ -333,6 +430,7 @@ async def kaggle_copilot_workflow(ctx: Context, node_input: Any) -> str:
             state = to_state(await ctx.run_node(baseline_model_node, state))
             state = to_state(await ctx.run_node(evaluation_node, state))
             state = to_state(await ctx.run_node(report_generator_node, state))
+            state = to_state(await ctx.run_node(code_critic_node, state))
 
             ctx.state["step"] = "ask_review"
             ctx.state["kaggle_state"] = state.model_dump()
@@ -345,10 +443,20 @@ async def kaggle_copilot_workflow(ctx: Context, node_input: Any) -> str:
                 # FIRST TIME: Yield RequestInput
                 ctx.state["ask_review_yielded"] = True
                 
+                critic_note = ""
+                if state.critic_feedback:
+                    critic_note = f"\n\n🕵️‍♂️ **Critic's Note:** {state.critic_feedback}\n"
+                    
+                sources_note = ""
+                if state.research_sources:
+                    sources_note = f"\n\n🔗 **Research Sources:**\n{state.research_sources}\n"
+                
                 message = (
                     f"Problem Type: {state.problem_type_patterns}\n"
                     f"Preprocessing: {state.preprocessing_strategy}\n"
-                    f"Models: {state.baseline_strategies}\n\n"
+                    f"Models: {state.baseline_strategies}"
+                    f"{critic_note}"
+                    f"{sources_note}\n\n"
                     "Do you approve this plan and code? (Reply 'approve' to save to file, or provide feedback for revision)"
                 )
                 yield RequestInput(interrupt_id=interrupt_id, message=message)
@@ -367,22 +475,24 @@ async def kaggle_copilot_workflow(ctx: Context, node_input: Any) -> str:
                     ctx.state["kaggle_state"] = state.model_dump()
 
         elif ctx.state["step"] == "finalize":
-            await ctx.run_node(write_code_file_node, state)
+            state = to_state(await ctx.run_node(write_code_file_node, state))
             
             ctx.state["step"] = "completed"
             ctx.state["kaggle_state"] = state.model_dump()
             
             summary_message = (
                 "🎉 **Workflow Completed Successfully!**\n\n"
-                "Both your baseline script and the analysis report have been generated and saved to your workspace:\n"
+                "Your baseline deliverables have been generated and saved to your workspace:\n"
                 "- 📄 **Python Script:** `baseline_solution.py`\n"
-                "- 📝 **Markdown Report:** `baseline_report.md`\n\n"
+                "- 📝 **Markdown Report:** `baseline_report.md`\n"
+                "- 📓 **Jupyter Notebook:** `baseline_solution.ipynb`\n\n"
                 "You can open them directly from your editor. To iterate or refine the results further, simply type your request in the chat!"
             )
             yield Event(output={
                 "message": summary_message,
                 "final_script": state.final_script,
-                "final_report": state.final_report
+                "final_report": state.final_report,
+                "final_notebook": state.final_notebook
             })
             return
 

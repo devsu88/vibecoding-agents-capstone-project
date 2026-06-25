@@ -21,7 +21,7 @@ def load_conversations():
             return {}
     return {}
 
-def save_conversation(session_id, messages, final_script=None, final_report=None):
+def save_conversation(session_id, messages, final_script=None, final_report=None, final_notebook=None):
     if not messages:
         return
     # Only save if there is at least one user message
@@ -38,12 +38,14 @@ def save_conversation(session_id, messages, final_script=None, final_report=None
             
     old_script = convos.get(session_id, {}).get("final_script")
     old_report = convos.get(session_id, {}).get("final_report")
+    old_notebook = convos.get(session_id, {}).get("final_notebook")
     
     convos[session_id] = {
         "title": title, 
         "messages": messages,
         "final_script": final_script or old_script,
-        "final_report": final_report or old_report
+        "final_report": final_report or old_report,
+        "final_notebook": final_notebook or old_notebook
     }
     with open(CONVERSATIONS_FILE, "w") as f:
         json.dump(convos, f)
@@ -71,6 +73,9 @@ if "final_script" not in st.session_state:
 
 if "final_report" not in st.session_state:
     st.session_state.final_report = None
+    
+if "final_notebook" not in st.session_state:
+    st.session_state.final_notebook = None
 
 # To resume the workflow on RequestInput
 if "pending_interrupt_id" not in st.session_state:
@@ -116,6 +121,14 @@ with st.sidebar:
                 mime="text/markdown",
                 use_container_width=True
             )
+        if st.session_state.get("final_notebook"):
+            st.download_button(
+                label="📥 Download Jupyter Notebook",
+                data=st.session_state.final_notebook,
+                file_name=f"notebook_{short_id}.ipynb",
+                mime="application/json",
+                use_container_width=True
+            )
         st.divider()
 
     st.subheader("Past Conversations")
@@ -134,6 +147,7 @@ with st.sidebar:
                         st.session_state.messages = [WELCOME_MESSAGE]
                         st.session_state.final_script = None
                         st.session_state.final_report = None
+                        st.session_state.final_notebook = None
                         st.session_state.pending_interrupt_id = None
                         st.rerun()
             else:
@@ -144,12 +158,14 @@ with st.sidebar:
                             st.session_state.session_id, 
                             st.session_state.messages,
                             final_script=st.session_state.get("final_script"),
-                            final_report=st.session_state.get("final_report")
+                            final_report=st.session_state.get("final_report"),
+                            final_notebook=st.session_state.get("final_notebook")
                         )
                     st.session_state.session_id = sid
                     st.session_state.messages = data["messages"]
                     st.session_state.final_script = data.get("final_script")
                     st.session_state.final_report = data.get("final_report")
+                    st.session_state.final_notebook = data.get("final_notebook")
                     st.session_state.pending_interrupt_id = None
                     st.rerun()
     else:
@@ -163,7 +179,7 @@ for msg in st.session_state.messages:
 if st.session_state.get("final_script") or st.session_state.get("final_report"):
     with st.chat_message("assistant"):
         st.markdown("### 📎 Project Deliverables (Attachments)")
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         short_id = st.session_state.session_id[:6]
         with col1:
             if st.session_state.get("final_script"):
@@ -184,6 +200,16 @@ if st.session_state.get("final_script") or st.session_state.get("final_report"):
                     mime="text/markdown",
                     use_container_width=True,
                     key="inline_btn_report"
+                )
+        with col3:
+            if st.session_state.get("final_notebook"):
+                st.download_button(
+                    label="📓 Download Jupyter Notebook",
+                    data=st.session_state.final_notebook,
+                    file_name=f"notebook_{short_id}.ipynb",
+                    mime="application/json",
+                    use_container_width=True,
+                    key="inline_btn_notebook"
                 )
 
 if "is_processing" not in st.session_state:
@@ -207,6 +233,7 @@ if st.session_state.is_processing and "pending_input" in st.session_state:
 
     # 2. Run the agent
     with st.chat_message("assistant"):
+        status = st.status("🤖 Agent is analyzing the competition...", expanded=True)
         st_placeholder = st.empty()
         full_response = ""
 
@@ -242,10 +269,12 @@ if st.session_state.is_processing and "pending_input" in st.session_state:
                             text_val = part.text
                             if text_val.strip().startswith("{") and '"input_text"' in text_val:
                                 author = getattr(event, "author", "Agent")
-                                text_val = f"\n*{author} finished reasoning step.*\n"
+                                status.update(label=f"⏳ Step completed: {author}...", state="running")
+                                text_val = ""
                             
-                            full_response += text_val + "\n"
-                            st_placeholder.markdown(full_response + "▌")
+                            if text_val:
+                                full_response += text_val + "\n"
+                                st_placeholder.markdown(full_response + "▌")
                         if hasattr(part, "function_call") and part.function_call and part.function_call.name == "adk_request_input":
                             is_request_input = True
                             req_msg = part.function_call.args.get("message", req_msg)
@@ -259,14 +288,20 @@ if st.session_state.is_processing and "pending_input" in st.session_state:
                         msg = event.output.get("message", "")
                         st.session_state.final_script = event.output.get("final_script")
                         st.session_state.final_report = event.output.get("final_report")
+                        st.session_state.final_notebook = event.output.get("final_notebook")
                         full_response += "\n\n" + msg + "\n"
                         st_placeholder.markdown(full_response + "▌")
 
                 if is_request_input:
+                    status.update(label="✅ Ready for your input!", state="complete")
                     if interrupt_id:
                         st.session_state.pending_interrupt_id = interrupt_id
                     full_response += f"\n\n**{req_msg}**\n"
                     st_placeholder.markdown(full_response + "▌")
+                    
+            if not st.session_state.pending_interrupt_id:
+                status.update(label="🎉 Done!", state="complete")
+
         except Exception as e:
             full_response += f"\n\nError: {e}"
         
@@ -277,7 +312,8 @@ if st.session_state.is_processing and "pending_input" in st.session_state:
             st.session_state.session_id, 
             st.session_state.messages,
             final_script=st.session_state.get("final_script"),
-            final_report=st.session_state.get("final_report")
+            final_report=st.session_state.get("final_report"),
+            final_notebook=st.session_state.get("final_notebook")
         )
         
     st.session_state.is_processing = False
