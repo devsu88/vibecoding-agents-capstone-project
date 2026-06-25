@@ -1,3 +1,12 @@
+"""
+Agents Module
+
+This module defines all the LLM-powered agents used in the Kaggle Copilot.
+Each agent is configured with a specific persona, instructions, and optionally, tools.
+They all share the same input/output schema (`KaggleState`) to ensure seamless
+data passing throughout the orchestration workflow.
+"""
+
 from typing import Any
 from google.adk.agents import Agent
 from google.adk.models import Gemini
@@ -5,6 +14,17 @@ from app.schema import KaggleState
 from app.tools import fetch_kaggle_competition_metadata, custom_web_search
 
 def create_agent(name: str, instruction: str, tools: list[Any] = None) -> Agent:
+    """
+    Helper function to instantiate an ADK Agent with standard configurations.
+
+    Args:
+        name (str): The unique identifier name for the agent.
+        instruction (str): The system prompt/instruction detailing the agent's behavior.
+        tools (list[Any], optional): A list of callable python functions the agent can use.
+
+    Returns:
+        Agent: A fully configured ADK Agent instance.
+    """
     if tools is None:
         tools = []
     return Agent(
@@ -15,6 +35,10 @@ def create_agent(name: str, instruction: str, tools: list[Any] = None) -> Agent:
         instruction=instruction,
         tools=tools
     )
+
+# ---------------------------------------------------------------------------
+# Data Understanding Agents
+# ---------------------------------------------------------------------------
 
 competition_ingestion_node = create_agent(
     "competition_ingestion_node",
@@ -36,6 +60,10 @@ eda_node = create_agent(
     "Perform a lightweight exploratory data analysis plan (missing values, target distribution, feature types, leakage). Append this to `dataset_characteristics` and retain other fields."
 )
 
+# ---------------------------------------------------------------------------
+# Feature Engineering & Preprocessing Agents
+# ---------------------------------------------------------------------------
+
 preprocessing_node = create_agent(
     "preprocessing_node",
     "Generate a basic preprocessing pipeline (imputation, encoding, scaling) suitable for the dataset. Consider any `human_feedback` if provided. Update `preprocessing_strategy` with descriptions and write the scikit-learn column transformer code in `preprocessing_code`. Retain other fields."
@@ -46,10 +74,20 @@ feature_engineering_node = create_agent(
     "Based on `dataset_characteristics` and `problem_type_patterns`, propose domain-specific feature engineering (e.g., aggregations, date parts, interactions, target encoding). Write the python code extending the preprocessing pipeline or as standalone pandas logic in `feature_engineering_code` and describe the strategy in `feature_engineering_strategy`. Consider `human_feedback`. Retain other fields."
 )
 
+# ---------------------------------------------------------------------------
+# Modeling & Research Agents
+# ---------------------------------------------------------------------------
+
 model_research_agent = Agent(
     name="model_research_agent",
     model=Gemini(model="gemini-flash-latest"),
-    instruction="Use the custom_web_search tool to research the best modeling approaches for the provided ML problem context. Then, decide on a modeling strategy (e.g., 1-2 strong baseline models, or a combination like Voting/Stacking ensemble). For tabular data, strongly prefer Gradient Boosting libraries (LightGBM, XGBoost, CatBoost). Consider `human_feedback`. IMPORTANT: You MUST include a 'SOURCES:' section at the very end of your response listing the sources you consulted. Format each source as a markdown link: `- [Title](URL)`. Return a concise strategy summary.",
+    instruction=(
+        "Use the custom_web_search tool to research the best modeling approaches for the provided ML problem context. "
+        "Then, decide on a modeling strategy (e.g., 1-2 strong baseline models, or a combination like Voting/Stacking ensemble). "
+        "For tabular data, strongly prefer Gradient Boosting libraries (LightGBM, XGBoost, CatBoost). Consider `human_feedback`. "
+        "IMPORTANT: You MUST include a 'SOURCES:' section at the very end of your response listing the sources you consulted. "
+        "Format each source as a markdown link: `- [Title](URL)`. Return a concise strategy summary."
+    ),
     tools=[custom_web_search]
 )
 
@@ -67,6 +105,10 @@ evaluation_node = create_agent(
         "Write the scikit-learn cross-validation code to `evaluation_code`. Retain other fields."
     )
 )
+
+# ---------------------------------------------------------------------------
+# Compilation & Review Agents
+# ---------------------------------------------------------------------------
 
 report_generator_node = create_agent(
     "report_generator_node",

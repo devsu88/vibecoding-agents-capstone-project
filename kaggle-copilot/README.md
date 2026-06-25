@@ -1,10 +1,10 @@
 # Kaggle Copilot Agent
 
-An AI assistant that automatically decomposes a Kaggle competition description or URL into a functional, validated machine learning baseline solution. Built with Google Agent Development Kit (ADK) 2.0.
+An autonomous AI assistant that decomposes a Kaggle competition description or URL into a functional, validated machine learning baseline solution. Built with Google Agent Development Kit (ADK) 2.0.
 
 ## Overview
 
-The Kaggle Copilot accepts a Kaggle competition link, extracts context using a custom metadata scraping tool, analyses features, plans data preprocessing, designs machine learning pipelines, and evaluates candidates under target-leakage-protected splits. The agent focuses on generating highly performant scripts that directly ingest competition data and favor state-of-the-art models like LightGBM and XGBoost.
+The Kaggle Copilot accepts a Kaggle competition link, automatically downloads the dataset, extracts context using metadata scraping, plans data preprocessing, designs machine learning pipelines, and evaluates candidates under target-leakage-protected splits. The agent focuses on generating highly performant scripts that directly ingest competition data and favor state-of-the-art models like LightGBM and XGBoost.
 
 ---
 
@@ -14,37 +14,48 @@ The Kaggle Copilot accepts a Kaggle competition link, extracts context using a c
 graph TD
     A[User Inputs URL] --> B[SSRF & URL Safe Check]
     B -->|Safe| C[Ingest Competition Metadata]
-    C --> D[Identify Problem & EDA Plan]
-    D --> E[Preprocessing & Feature Engineering]
-    E --> F[Unified Baseline & Ensemble Modeling]
-    F --> G[Cross Validation & Metric Setup]
-    G --> H[Combine & Generate Script]
-    H --> K[Ask for Review HITL]
-    K -->|Revise| E
-    K -->|Approve| L[Write baseline_solution.py]
-    L -->|Continuous Refinement| E
+    C --> D[Download Kaggle Dataset via API]
+    D -->|403 Error| D_Error[Interactive Retry Loop for Rules Acceptance]
+    D_Error --> D
+    D -->|Success| E[Identify Problem & EDA Plan]
+    E --> F[Preprocessing & Feature Engineering]
+    F --> G[DuckDuckGo Research & Ensemble Modeling]
+    G --> H[Cross Validation & Metric Setup]
+    H --> I[Combine & Generate Script]
+    I --> J[Code Critic Node]
+    J --> K[Ask for Review HITL]
+    K -->|Revise| F
+    K -->|Approve| L[Write Python Script, Markdown & Jupyter Notebook]
+    L -->|Continuous Refinement| F
 ```
 
 ### Key Workflow Features:
 1.  **Streamlit Chat Interface**: A custom, polished UI featuring a ChatGPT-like sidebar for managing persistent conversation histories (`conversations.json`) across sessions.
-2.  **Dynamic Graph Workflow**: Implemented as an asynchronous ADK dynamic flow, preserving loop checkpointing and variable scopes natively to support Human-in-the-loop (HITL) interactions and **continuous post-generation refinement**.
-3.  **Real-World Data Processing**: The generated script is structured to directly load the competition's `train.csv` and `test.csv` using pandas, producing executable, competition-ready code without relying on synthetic data.
-4.  **Targeted Web Research**: Features an internally decoupled modeling node that transparently leverages `google_search` to research state-of-the-art baselines (prioritizing Gradient Boosting libraries) before generating structured code.
-5.  **Robust Feature Engineering & Ensembling**: The workflow dedicates specific steps to domain-aware feature engineering and automatically constructs powerful model ensembles (e.g., Voting, Stacking) directly based on research.
+2.  **Fully Modular Architecture**: The core logic is cleanly separated using the Single Responsibility Principle into `schema.py`, `tools.py`, `agents.py`, `nodes.py`, and the orchestrator `workflow.py`.
+3.  **Automated Dataset Ingestion**: Uses the official `kaggle` Python API to download and extract ZIP datasets. Features a graceful interactive loop that pauses and guides the user if a 403 Forbidden error occurs (requiring manual Kaggle rule acceptance).
+4.  **Targeted Web Research**: Features an internally decoupled modeling node that transparently leverages DuckDuckGo Search (`ddgs`) to research state-of-the-art baselines and provide verifiable Markdown links as sources.
+5.  **Multi-format Output**: Upon human approval, the system generates a raw Python script (`baseline_solution.py`), a comprehensive report (`baseline_report.md`), and a fully executable Jupyter Notebook (`baseline_solution.ipynb`).
+6.  **Code Critic Reviewer**: An independent "Grandmaster" agent critiques the generated code for data leakage and common pitfalls before presenting it to the user.
 
 ---
 
 ## 📁 Project Structure
 
-```
+```text
 kaggle-copilot/
-├── app/                      # Core agent code
-│   └── agent.py              # Main agent workflow logic & tools
-├── streamlit_app.py          # Custom Streamlit Chat Frontend
-├── conversations.json        # Persistent chat history storage
-├── .env                      # Local environment configurations
-├── pyproject.toml            # Project dependencies
-└── README.md                 # Project guide
+├── app/                        # Modular Agent Package
+│   ├── __init__.py             # Exposes the ADK App
+│   ├── schema.py               # Pydantic State definitions
+│   ├── utils.py                # Pure helper functions
+│   ├── tools.py                # Web search, scraping, and Kaggle API tools
+│   ├── agents.py               # LLM Agent definitions and prompts
+│   ├── nodes.py                # Deterministic I/O and interactive ADK nodes
+│   └── workflow.py             # Main ADK state machine orchestrator
+├── streamlit_app.py            # Custom Streamlit Chat Frontend
+├── conversations.json          # Persistent chat history storage
+├── .env                        # Local environment configurations
+├── pyproject.toml              # Project dependencies
+└── README.md                   # Project guide
 ```
 
 ---
@@ -52,7 +63,7 @@ kaggle-copilot/
 ## ⚙️ Requirements & Installation
 
 1. **uv**: Ensure Astral's Python manager `uv` is installed ([Install Guide](https://docs.astral.sh/uv/getting-started/installation/)).
-2. **agents-cli**: Install via `uv tool install google-agents-cli`.
+2. **Kaggle API Key**: You must have your `kaggle.json` credentials file placed in `~/.kaggle/kaggle.json` for the dataset downloader to work.
 3. Configure the `.env` file at the root directory:
    ```env
    GOOGLE_CLOUD_PROJECT=your-gcp-project-id
@@ -62,7 +73,7 @@ kaggle-copilot/
 
 Install project dependencies:
 ```bash
-agents-cli install
+uv sync
 ```
 
 ---
@@ -75,7 +86,7 @@ uv run streamlit run streamlit_app.py
 ```
 
 1. Open the local web interface link shown in the terminal (usually `http://localhost:8501`).
-2. Provide a Kaggle URL (e.g., `https://www.kaggle.com/competitions/titanic`) in the chat to begin.
-3. The agent will fetch the metadata, plan preprocessing, research models, and generate the final code.
-4. When prompted by the agent, either reply with `approve` to finalize and write the script, or provide feedback (e.g., "Use XGBoost instead") to trigger a revision loop.
+2. Provide a Kaggle URL (e.g., `https://www.kaggle.com/competitions/digit-recognizer`) in the chat to begin.
+3. The agent will fetch the metadata, automatically download the `.csv` files, research models, and generate the final code.
+4. When prompted by the agent, either reply with `approve` to finalize and save the files, or provide feedback (e.g., "Use XGBoost instead") to trigger a revision loop.
 5. You can seamlessly switch between past projects using the **Past Conversations** menu in the sidebar!

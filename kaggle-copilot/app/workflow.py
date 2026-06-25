@@ -1,3 +1,11 @@
+"""
+Workflow Orchestrator Module
+
+This module defines the primary state machine that coordinates the execution of all 
+agents and deterministic nodes. It handles the interactive lifecycle of the Kaggle Copilot, 
+including pausing for user inputs (RequestInput) and handling resume logic.
+"""
+
 from typing import Any
 from dotenv import load_dotenv
 
@@ -25,11 +33,27 @@ from app.nodes import (
     write_code_file_node
 )
 
+# Load environment variables (e.g. GEMINI_API_KEY)
 load_dotenv()
 
-# Main Dynamic Orchestrator Workflow
 @node(name="kaggle_copilot_workflow", rerun_on_resume=True)
 async def kaggle_copilot_workflow(ctx: Context, node_input: Any) -> str:
+    """
+    The main state machine orchestrator for the Kaggle Copilot.
+    
+    This workflow uses `ctx.state` to keep track of exactly which step of the 
+    pipeline the user is currently in. If the app stops or restarts, ADK's 
+    resumability features will jump back into this state machine with the saved state.
+    
+    Args:
+        ctx (Context): The ADK Context holding workflow variables and state.
+        node_input (Any): The user's chat input or the output from a previous node.
+        
+    Yields:
+        RequestInput: To pause execution and ask the user for feedback or URL.
+        Event: To output final system messages back to the UI.
+    """
+    # 1. State Initialization
     if "kaggle_state" in ctx.state:
         state = KaggleState(**ctx.state["kaggle_state"])
     else:
@@ -38,7 +62,9 @@ async def kaggle_copilot_workflow(ctx: Context, node_input: Any) -> str:
     if "step" not in ctx.state:
         ctx.state["step"] = "ask_url"
         
+    # 2. Main Event Loop
     while True:
+        # Phase 1: Await and Validate URL
         if ctx.state["step"] == "ask_url":
             text = extract_text(node_input)
             url, is_valid = extract_and_validate_kaggle_url(text)
@@ -53,11 +79,13 @@ async def kaggle_copilot_workflow(ctx: Context, node_input: Any) -> str:
                 yield RequestInput(interrupt_id="url_input", message="Please provide a valid Kaggle competition URL to proceed.")
                 return
 
+        # Phase 2: Metadata extraction, data downloading, and initial EDA
         elif ctx.state["step"] == "process_url":
             if not ctx.state.get("metadata_extracted", False):
                 state = to_state(await ctx.run_node(competition_ingestion_node, state))
                 ctx.state["metadata_extracted"] = True
             
+            # Interactive retry loop for dataset downloading (handles Kaggle 403 Forbidden rules)
             if not ctx.state.get("dataset_downloaded", False):
                 state = to_state(await ctx.run_node(download_dataset_node, state))
                 res = ctx.state.get("download_status", "")
@@ -71,9 +99,12 @@ async def kaggle_copilot_workflow(ctx: Context, node_input: Any) -> str:
 
             state = to_state(await ctx.run_node(problem_understanding_node, state))
             state = to_state(await ctx.run_node(eda_node, state))
+            
+            # Move to the modeling loop
             ctx.state["step"] = "modeling_loop"
             ctx.state["kaggle_state"] = state.model_dump()
 
+        # Phase 3: The Modeling Loop (preprocessing, feature engineering, modeling, review)
         elif ctx.state["step"] == "modeling_loop":
             state = to_state(await ctx.run_node(preprocessing_node, state))
             state = to_state(await ctx.run_node(feature_engineering_node, state))
@@ -85,12 +116,13 @@ async def kaggle_copilot_workflow(ctx: Context, node_input: Any) -> str:
             ctx.state["step"] = "ask_review"
             ctx.state["kaggle_state"] = state.model_dump()
 
+        # Phase 4: User Review and Approval
         elif ctx.state["step"] == "ask_review":
             review_idx = ctx.state.get("review_count", 0)
             interrupt_id = f"review_input_{review_idx}"
             
             if not ctx.state.get("ask_review_yielded", False):
-                # FIRST TIME: Yield RequestInput
+                # FIRST TIME: Yield RequestInput to show the generated plan and ask for approval
                 ctx.state["ask_review_yielded"] = True
                 
                 critic_note = ""
@@ -112,18 +144,20 @@ async def kaggle_copilot_workflow(ctx: Context, node_input: Any) -> str:
                 yield RequestInput(interrupt_id=interrupt_id, message=message)
                 return
             else:
-                # RESUMING: Check node_input
+                # RESUMING: Check the user's feedback
                 feedback = extract_text(node_input)
                 ctx.state["ask_review_yielded"] = False # reset for next time
                 
                 if "approve" in feedback.lower() or "yes" in feedback.lower() or feedback.strip() == "":
                     ctx.state["step"] = "finalize"
                 else:
+                    # User requested changes, loop back to the modeling loop with human_feedback injected
                     state.human_feedback = feedback
                     ctx.state["step"] = "modeling_loop"
                     ctx.state["review_count"] = review_idx + 1
                     ctx.state["kaggle_state"] = state.model_dump()
 
+        # Phase 5: Writing Output Artifacts
         elif ctx.state["step"] == "finalize":
             state = to_state(await ctx.run_node(write_code_file_node, state))
             
@@ -138,6 +172,7 @@ async def kaggle_copilot_workflow(ctx: Context, node_input: Any) -> str:
                 "- 📓 **Jupyter Notebook:** `baseline_solution.ipynb`\n\n"
                 "You can open them directly from your editor. To iterate or refine the results further, simply type your request in the chat!"
             )
+            # Emit final message to UI
             yield Event(output={
                 "message": summary_message,
                 "final_script": state.final_script,
@@ -146,6 +181,7 @@ async def kaggle_copilot_workflow(ctx: Context, node_input: Any) -> str:
             })
             return
 
+        # Phase 6: Continuous Refinement Loop
         elif ctx.state["step"] == "completed":
             # If the user sends a message after the workflow has finished, treat it as refinement feedback
             feedback = extract_text(node_input)
@@ -157,7 +193,7 @@ async def kaggle_copilot_workflow(ctx: Context, node_input: Any) -> str:
             else:
                 return
 
-# Setup the root agent and expose the App
+# Setup the root agent DAG and expose the App
 root_agent = Workflow(
     name="kaggle_copilot_workflow",
     edges=[("START", kaggle_copilot_workflow)]
