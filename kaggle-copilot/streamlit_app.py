@@ -62,7 +62,42 @@ def delete_all_conversations():
     if os.path.exists(CONVERSATIONS_FILE):
         os.remove(CONVERSATIONS_FILE)
 
-st.set_page_config(page_title="Kaggle Copilot", layout="wide")
+st.set_page_config(page_title="Kaggle Copilot", page_icon="🏆", layout="wide")
+
+# Custom CSS Injection for a cleaner and more professional UI
+st.markdown("""
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;800&display=swap');
+    
+    html, body, [class*="css"] {
+        font-family: 'Poppins', sans-serif;
+    }
+
+    /* Hides the top right hamburger menu and the Deploy button */
+    #MainMenu {visibility: hidden;}
+    header {visibility: hidden;}
+    
+    /* Hides the "Made with Streamlit" footer */
+    footer {visibility: hidden;}
+    
+    /* Rounds expanders and buttons for a softer, organic look */
+    div[data-testid="stExpander"] {
+        border-radius: 12px;
+        border: 1px solid #E2E8F0;
+        box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+    }
+    .stButton>button {
+        border-radius: 12px;
+        font-weight: 600;
+    }
+    
+    /* Style for the user and assistant chat messages */
+    [data-testid="stChatMessage"] {
+        border-radius: 16px;
+        padding: 1rem;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 if "session_service" not in st.session_state:
     st.session_state.session_service = InMemorySessionService()
@@ -86,7 +121,8 @@ if "final_notebook" not in st.session_state:
 if "pending_interrupt_id" not in st.session_state:
     st.session_state.pending_interrupt_id = None
 
-st.title("Kaggle Copilot Chat")
+st.title("🏆 Kaggle Copilot")
+st.caption("🚀 An autonomous AI assistant to dominate Kaggle competitions")
 
 with st.sidebar:
     if st.button("Start New Conversation", type="primary", use_container_width=True):
@@ -191,7 +227,8 @@ with st.sidebar:
         st.info("No past conversations yet.")
 
 for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
+    avatar = "🧑‍💻" if msg["role"] == "user" else "🤖"
+    with st.chat_message(msg["role"], avatar=avatar):
         st.markdown(msg["content"])
         if "expanders" in msg:
             for exp in msg["expanders"]:
@@ -203,7 +240,7 @@ for msg in st.session_state.messages:
 
 # Render inline deliverables block at the bottom of the chat history if they exist
 if st.session_state.get("final_script") or st.session_state.get("final_report"):
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar="🤖"):
         st.markdown("### 📎 Project Deliverables (Attachments)")
         col1, col2, col3 = st.columns(3)
         short_id = st.session_state.session_id[:6]
@@ -254,11 +291,11 @@ if st.session_state.is_processing and "pending_input" in st.session_state:
 
     # 1. Store user message in history
     st.session_state.messages.append({"role": "user", "content": input_text})
-    with st.chat_message("user"):
+    with st.chat_message("user", avatar="🧑‍💻"):
         st.markdown(input_text)
 
     # 2. Run the agent
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar="🤖"):
         status = st.status("🤖 Agent is analyzing the competition...", expanded=True)
         st_placeholder = st.empty()
         full_response = ""
