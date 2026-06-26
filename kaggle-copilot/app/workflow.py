@@ -15,7 +15,7 @@ from google.adk.workflow import node
 from google.adk.apps import App, ResumabilityConfig
 
 from app.schema import KaggleState
-from app.utils import extract_text, to_state
+from app.utils import extract_text, to_state, run_cached_node
 from app.tools import extract_and_validate_kaggle_url
 from app.agents import (
     competition_ingestion_node,
@@ -28,7 +28,6 @@ from app.agents import (
     code_critic_node
 )
 from app.nodes import (
-    download_dataset_node,
     baseline_model_node,
     write_code_file_node
 )
@@ -82,66 +81,23 @@ async def kaggle_copilot_workflow(ctx: Context, node_input: Any) -> str:
         # Phase 2: Metadata extraction
         elif ctx.state["step"] == "process_url":
             if not ctx.state.get("metadata_extracted", False):
-                state = to_state(await ctx.run_node(competition_ingestion_node, state))
+                state = await run_cached_node(ctx, competition_ingestion_node, state)
                 ctx.state["metadata_extracted"] = True
             
-            # Transition to the interactive download prompt
-            ctx.state["step"] = "ask_download"
+            # Transition to the modeling loop
+            state = await run_cached_node(ctx, problem_understanding_node, state)
+            state = await run_cached_node(ctx, eda_node, state)
+            ctx.state["step"] = "modeling_loop"
             ctx.state["kaggle_state"] = state.model_dump()
-            
-        # Phase 2.5: Interactive Dataset Download Decision
-        elif ctx.state["step"] == "ask_download":
-            if not ctx.state.get("ask_download_yielded", False):
-                ctx.state["ask_download_yielded"] = True
-                yield RequestInput(interrupt_id="ask_download", message="Do you want me to download the dataset locally in this workspace so you can test the code immediately? (Reply 'yes' or 'no')")
-                return
-            else:
-                feedback = extract_text(node_input).strip().lower()
-                
-                # If the user says NO, skip download
-                if feedback in ["no", "n", "skip"]:
-                    ctx.state["ask_download_yielded"] = False # reset
-                    ctx.state["dataset_downloaded"] = False
-                    
-                    # Proceed to modeling
-                    state = to_state(await ctx.run_node(problem_understanding_node, state))
-                    state = to_state(await ctx.run_node(eda_node, state))
-                    ctx.state["step"] = "modeling_loop"
-                    ctx.state["kaggle_state"] = state.model_dump()
-                    
-                # If the user says YES (or anything else like "fatto" during a retry)
-                else:
-                    ctx.state["ask_download_yielded"] = False # reset
-                    
-                    if not ctx.state.get("dataset_downloaded", False):
-                        state = to_state(await ctx.run_node(download_dataset_node, state))
-                        res = ctx.state.get("download_status", "")
-                        
-                        if "403" in res or "Forbidden" in res:
-                            ctx.state["ask_download_yielded"] = True # keep yielded to loop back here
-                            yield RequestInput(message="⚠️ **Action Required:** The Kaggle API returned a 403 (Forbidden) error. This happens because you haven't accepted the competition rules yet.\n\nPlease go to the 'Rules' page of the competition on Kaggle, click **'I Understand and Accept'**, and reply 'yes' here to retry the download (or 'no' to skip the download and continue).")
-                            return
-                        elif "Error" in res:
-                            ctx.state["ask_download_yielded"] = True
-                            yield RequestInput(message=f"⚠️ **Download Error:** {res}\n\nPlease resolve the issue and reply 'yes' to retry (or 'no' to skip the download and continue).")
-                            return
-                            
-                        ctx.state["dataset_downloaded"] = True
-
-                    # Move to the modeling loop
-                    state = to_state(await ctx.run_node(problem_understanding_node, state))
-                    state = to_state(await ctx.run_node(eda_node, state))
-                    ctx.state["step"] = "modeling_loop"
-                    ctx.state["kaggle_state"] = state.model_dump()
 
         # Phase 3: The Modeling Loop (preprocessing, feature engineering, modeling, review)
         elif ctx.state["step"] == "modeling_loop":
-            state = to_state(await ctx.run_node(preprocessing_node, state))
-            state = to_state(await ctx.run_node(feature_engineering_node, state))
-            state = to_state(await ctx.run_node(baseline_model_node, state))
-            state = to_state(await ctx.run_node(evaluation_node, state))
-            state = to_state(await ctx.run_node(report_generator_node, state))
-            state = to_state(await ctx.run_node(code_critic_node, state))
+            state = await run_cached_node(ctx, preprocessing_node, state)
+            state = await run_cached_node(ctx, feature_engineering_node, state)
+            state = await run_cached_node(ctx, baseline_model_node, state)
+            state = await run_cached_node(ctx, evaluation_node, state)
+            state = await run_cached_node(ctx, report_generator_node, state)
+            state = await run_cached_node(ctx, code_critic_node, state)
 
             ctx.state["step"] = "ask_review"
             ctx.state["kaggle_state"] = state.model_dump()
@@ -182,7 +138,7 @@ async def kaggle_copilot_workflow(ctx: Context, node_input: Any) -> str:
                     ctx.state["step"] = "finalize"
                 else:
                     # User requested changes, loop back to the modeling loop with human_feedback injected
-                    state.human_feedback = feedback
+                    state.human_feedback.append(feedback)
                     ctx.state["step"] = "modeling_loop"
                     ctx.state["review_count"] = review_idx + 1
                     ctx.state["kaggle_state"] = state.model_dump()
@@ -213,13 +169,24 @@ async def kaggle_copilot_workflow(ctx: Context, node_input: Any) -> str:
 
         # Phase 6: Continuous Refinement Loop
         elif ctx.state["step"] == "completed":
-            # If the user sends a message after the workflow has finished, treat it as refinement feedback
+            # If the user sends a message after the workflow has finished, treat it as refinement feedback or a new URL
             feedback = extract_text(node_input)
             if feedback.strip():
-                state.human_feedback = feedback
-                ctx.state["step"] = "modeling_loop"
-                ctx.state["kaggle_state"] = state.model_dump()
-                continue
+                url, is_valid = extract_and_validate_kaggle_url(feedback)
+                if is_valid and url:
+                    # Case A: User provided a new Kaggle URL. Smart Route back to start!
+                    state = KaggleState(input_text=url) # Wipe the state clean
+                    ctx.state["metadata_extracted"] = False
+                    ctx.state["ask_review_yielded"] = False
+                    ctx.state["step"] = "process_url"
+                    ctx.state["kaggle_state"] = state.model_dump()
+                    continue
+                else:
+                    # Case B: Not a URL, treat as human feedback for the current codebase
+                    state.human_feedback.append(feedback)
+                    ctx.state["step"] = "modeling_loop"
+                    ctx.state["kaggle_state"] = state.model_dump()
+                    continue
             else:
                 return
 

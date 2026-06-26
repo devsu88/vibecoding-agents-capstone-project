@@ -14,9 +14,7 @@ import ipaddress
 import urllib.request
 import urllib.parse
 import urllib.error
-import zipfile
 import json
-from kaggle.api.kaggle_api_extended import KaggleApi
 from ddgs import DDGS
 
 def fetch_kaggle_competition_metadata(url: str) -> str:
@@ -151,41 +149,3 @@ def extract_and_validate_kaggle_url(text: str) -> tuple[str | None, bool]:
             
     return None, False
 
-def download_kaggle_competition_data(url: str) -> str:
-    """
-    Downloads and extracts the dataset for a Kaggle competition using the official Kaggle API.
-    
-    This function relies on `~/.kaggle/kaggle.json` being present and configured.
-    It identifies the competition slug, invokes the download process, and automatically
-    unzipping the downloaded file into the current working directory.
-    
-    Args:
-        url (str): The full Kaggle competition URL.
-        
-    Returns:
-        str: A success message, or an error string (e.g. 403 Forbidden if rules are not accepted).
-    """
-    slug_match = re.search(r'/(?:competitions|c|datasets)/([\w-]+)', url)
-    if not slug_match:
-        return "Error: Could not extract competition slug from URL."
-    
-    slug = slug_match.group(1)
-    
-    try:
-        # Initialize and authenticate API client
-        api = KaggleApi()
-        api.authenticate()
-        
-        # Download files quietly
-        api.competition_download_files(slug, path='.', force=False, quiet=True)
-        
-        # Check if a zip was downloaded and extract it
-        zip_path = f"{slug}.zip"
-        if os.path.exists(zip_path):
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall('.')
-            return f"Successfully downloaded and extracted dataset for {slug}."
-        else:
-            return f"Successfully downloaded dataset for {slug}, but no zip file was found."
-    except Exception as e:
-        return f"Error downloading dataset: {str(e)}"

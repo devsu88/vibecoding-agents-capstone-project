@@ -4,7 +4,7 @@ An autonomous AI assistant that decomposes a Kaggle competition description or U
 
 ## Overview
 
-The Kaggle Copilot accepts a Kaggle competition link, automatically downloads the dataset, extracts context using metadata scraping, plans data preprocessing, designs machine learning pipelines, and evaluates candidates under target-leakage-protected splits. The agent focuses on generating highly performant scripts that directly ingest competition data and favor state-of-the-art models like LightGBM and XGBoost.
+The Kaggle Copilot provides a true **"Zero-Click"** experience. It accepts a Kaggle competition link, instantly extracts context using metadata scraping, plans data preprocessing, designs machine learning pipelines, and evaluates candidates under target-leakage-protected splits. The agent focuses on generating highly performant scripts that favor state-of-the-art models like LightGBM and XGBoost, without ever requiring you to download the dataset beforehand or configure complex Kaggle API keys.
 
 ---
 
@@ -14,30 +14,25 @@ The Kaggle Copilot accepts a Kaggle competition link, automatically downloads th
 graph TD
     A[User Inputs URL] --> B[SSRF & URL Safe Check]
     B -->|Safe| C[Ingest Competition Metadata]
-    C --> D[Ask User to Download Dataset]
-    D -->|Yes| E[Download Kaggle Dataset via API]
-    E -->|403 Error| E_Error[Interactive Retry Loop for Rules Acceptance]
-    E_Error --> E
-    E_Error -->|Skip| F
-    D -->|No / Skip| F[Identify Problem & EDA Plan]
-    E -->|Success| F
-    E --> F[Preprocessing & Feature Engineering]
-    F --> G[DuckDuckGo Research & Ensemble Modeling]
-    G --> H[Cross Validation & Metric Setup]
-    H --> I[Combine & Generate Script]
-    I --> J[Code Critic Node]
-    J --> K[Ask for Review HITL]
-    K -->|Revise| G
-    K -->|Approve| L[Write Python Script, Markdown & Jupyter Notebook]
-    L -->|Continuous Refinement| G
+    C --> F[Identify Problem & EDA Plan]
+    F --> G[Preprocessing & Feature Engineering]
+    G --> H[DuckDuckGo Research & Ensemble Modeling]
+    H --> I[Cross Validation & Metric Setup]
+    I --> J[Combine & Generate Script]
+    J --> K[Code Critic Node]
+    K --> L[Ask for Review HITL]
+    L -->|Revise| G
+    L -->|Approve| M[Write Python Script, Markdown & Jupyter Notebook]
+    M -->|Continuous Refinement| G
+    M -->|New Kaggle URL Paste| C
 ```
 
 ### Key Workflow Features:
-1.  **Streamlit Chat Interface**: A custom, polished UI featuring a ChatGPT-like sidebar for managing persistent conversation histories (`conversations.json`) across sessions.
-2.  **Fully Modular Architecture**: The core logic is cleanly separated using the Single Responsibility Principle into `schema.py`, `tools.py`, `agents.py`, `nodes.py`, and the orchestrator `workflow.py`.
-3.  **Automated & Interactive Dataset Ingestion**: Uses the official `kaggle` Python API to download and extract ZIP datasets in a non-blocking background thread. Includes a Human-In-The-Loop prompt allowing the user to skip the download, as well as a graceful interactive loop that pauses and guides the user if a 403 Forbidden error occurs (requiring manual Kaggle rule acceptance).
-4.  **Targeted Web Research**: Features an internally decoupled modeling node that transparently leverages DuckDuckGo Search (`ddgs`) to research state-of-the-art baselines and provide verifiable Markdown links as sources.
-5.  **Multi-format Output**: Upon human approval, the system generates a raw Python script (`baseline_solution.py`), a comprehensive report (`baseline_report.md`), and a fully executable Jupyter Notebook (`baseline_solution.ipynb`).
+1.  **Zero-Click Experience**: Instantly transitions from URL ingestion to code generation. The agents use standardized placeholders (e.g., `pd.read_csv('train.csv')`) so you don't need to authenticate or download the dataset in advance.
+2.  **Streamlit Chat Interface**: A custom, polished UI featuring a ChatGPT-like sidebar for managing persistent conversation histories (`conversations.json`), alongside one-click buttons to Clear LLM Cache and Delete All Conversations.
+3.  **Observability & Telemetry**: Every intermediate agent output and exact token consumption (In/Out) is rendered in beautifully formatted, persistent UI expanders that survive page reloads.
+4.  **Deterministic LLM Caching**: Built-in MD5 state hashing mechanism automatically bypasses expensive LLM API calls if the underlying `KaggleState` has not changed, saving time and tokens.
+5.  **Smart Routing & Persistent Memory**: Post-workflow, the orchestrator detects if a user pastes a new Kaggle URL (wiping the state and restarting gracefully) or types a natural language request. Human feedback is appended to a persistent list, ensuring the model never suffers from "amnesia" during sequential refinement loops.
 6.  **Code Critic Reviewer**: An independent "Grandmaster" agent critiques the generated code for data leakage and common pitfalls before presenting it to the user.
 
 ---
@@ -49,8 +44,8 @@ kaggle-copilot/
 ├── app/                        # Modular Agent Package
 │   ├── __init__.py             # Exposes the ADK App
 │   ├── schema.py               # Pydantic State definitions
-│   ├── utils.py                # Pure helper functions
-│   ├── tools.py                # Web search, scraping, and Kaggle API tools
+│   ├── utils.py                # Pure helper functions (Caching & State mapping)
+│   ├── tools.py                # Web search and scraping tools
 │   ├── agents.py               # LLM Agent definitions and prompts
 │   ├── nodes.py                # Deterministic I/O and interactive ADK nodes
 │   └── workflow.py             # Main ADK state machine orchestrator
@@ -66,8 +61,7 @@ kaggle-copilot/
 ## ⚙️ Requirements & Installation
 
 1. **uv**: Ensure Astral's Python manager `uv` is installed ([Install Guide](https://docs.astral.sh/uv/getting-started/installation/)).
-2. **Kaggle API Key**: You must have your `kaggle.json` credentials file placed in `~/.kaggle/kaggle.json` for the dataset downloader to work.
-3. Configure the `.env` file at the root directory:
+2. Configure the `.env` file at the root directory:
    ```env
    GOOGLE_CLOUD_PROJECT=your-gcp-project-id
    GOOGLE_CLOUD_LOCATION=global
@@ -90,6 +84,6 @@ uv run streamlit run streamlit_app.py
 
 1. Open the local web interface link shown in the terminal (usually `http://localhost:8501`).
 2. Provide a Kaggle URL (e.g., `https://www.kaggle.com/competitions/digit-recognizer`) in the chat to begin.
-3. The agent will fetch the metadata, ask if you want to download the data locally, research models, and generate the final code.
-4. When prompted by the agent, either reply with `approve` to finalize and save the files, or provide feedback (e.g., "Use XGBoost instead") to trigger a revision loop.
-5. You can seamlessly switch between past projects using the **Past Conversations** menu in the sidebar!
+3. The agent will fetch the metadata, research models, and generate the final code instantly.
+4. When prompted by the agent, either reply with `approve` to finalize and save the files, or provide feedback (e.g., "Use XGBoost instead") to trigger a revision loop. Your feedback is accumulated so the agent remembers past instructions!
+5. To start a new project, simply paste a new Kaggle URL in the chat, or use the **Start New Conversation** button in the sidebar.

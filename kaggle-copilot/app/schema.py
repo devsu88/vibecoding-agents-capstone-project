@@ -6,7 +6,7 @@ across the entire lifecycle of the Kaggle Copilot workflow. It uses Pydantic
 for strict typing and easy serialization.
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 class KaggleState(BaseModel):
     """
@@ -44,7 +44,7 @@ class KaggleState(BaseModel):
     baseline_code: str = ""
     evaluation_code: str = ""
     final_script: str = ""
-    human_feedback: str = ""
+    human_feedback: list[str] = Field(default_factory=list)
     final_report: str = ""
     critic_feedback: str = ""
     final_notebook: str = ""

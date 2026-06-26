@@ -6,6 +6,7 @@ from google.genai import types
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from app import app as adk_app
+from app.utils import clear_llm_cache
 
 import json
 
@@ -57,6 +58,10 @@ def delete_conversation(session_id):
         with open(CONVERSATIONS_FILE, "w") as f:
             json.dump(convos, f)
 
+def delete_all_conversations():
+    if os.path.exists(CONVERSATIONS_FILE):
+        os.remove(CONVERSATIONS_FILE)
+
 st.set_page_config(page_title="Kaggle Copilot", layout="wide")
 
 if "session_service" not in st.session_state:
@@ -96,6 +101,20 @@ with st.sidebar:
         st.session_state.messages = [WELCOME_MESSAGE]
         st.session_state.final_script = None
         st.session_state.final_report = None
+        st.session_state.pending_interrupt_id = None
+        st.rerun()
+        
+    if st.button("🧹 Clear LLM Cache", use_container_width=True):
+        clear_llm_cache()
+        st.toast("LLM Cache cleared successfully!")
+        
+    if st.button("🗑️ Delete All Conversations", use_container_width=True, type="secondary"):
+        delete_all_conversations()
+        st.session_state.session_id = str(uuid.uuid4())
+        st.session_state.messages = [WELCOME_MESSAGE]
+        st.session_state.final_script = None
+        st.session_state.final_report = None
+        st.session_state.final_notebook = None
         st.session_state.pending_interrupt_id = None
         st.rerun()
         
@@ -174,6 +193,13 @@ with st.sidebar:
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
+        if "expanders" in msg:
+            for exp in msg["expanders"]:
+                with st.expander(exp["title"]):
+                    try:
+                        st.json(json.loads(exp["json"]))
+                    except Exception:
+                        st.write(exp["json"])
 
 # Render inline deliverables block at the bottom of the chat history if they exist
 if st.session_state.get("final_script") or st.session_state.get("final_report"):
@@ -236,6 +262,7 @@ if st.session_state.is_processing and "pending_input" in st.session_state:
         status = st.status("🤖 Agent is analyzing the competition...", expanded=True)
         st_placeholder = st.empty()
         full_response = ""
+        current_expanders = []
 
         runner = Runner(
             app=adk_app,
@@ -270,6 +297,27 @@ if st.session_state.is_processing and "pending_input" in st.session_state:
                             if text_val.strip().startswith("{") and '"input_text"' in text_val:
                                 author = getattr(event, "author", "Agent")
                                 status.update(label=f"⏳ Step completed: {author}...", state="running")
+                                
+                                usage_str = ""
+                                usage = getattr(event, "usage_metadata", None)
+                                if usage:
+                                    prompt_tokens = getattr(usage, "prompt_token_count", 0) or 0
+                                    out_tokens = getattr(usage, "candidates_token_count", 0) or 0
+                                    usage_str = f" 📊 Tokens: {prompt_tokens} (in) | {out_tokens} (out)"
+                                    
+                                with status:
+                                    exp_title = f"⚙️ Output: {author}{usage_str}"
+                                    with st.expander(exp_title):
+                                        try:
+                                            st.json(json.loads(text_val))
+                                        except Exception:
+                                            st.write(text_val)
+                                            
+                                current_expanders.append({
+                                    "title": exp_title,
+                                    "json": text_val
+                                })
+                                            
                                 text_val = ""
                             
                             if text_val:
@@ -306,7 +354,11 @@ if st.session_state.is_processing and "pending_input" in st.session_state:
             full_response += f"\n\nError: {e}"
         
         st_placeholder.markdown(full_response)
-        st.session_state.messages.append({"role": "assistant", "content": full_response})
+        st.session_state.messages.append({
+            "role": "assistant", 
+            "content": full_response,
+            "expanders": current_expanders
+        })
         
         save_conversation(
             st.session_state.session_id, 
